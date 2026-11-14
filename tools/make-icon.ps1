@@ -1,121 +1,139 @@
-$ErrorActionPreference = 'Stop'
+﻿# 生成 FontSwap 的图标：圆角蓝底 + 白色 "Aa"，输出多尺寸 ICO 与 256px PNG。
+param(
+    [switch]$Force
+)
+
+$ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 
-$root = Split-Path -Parent $PSScriptRoot
-$src = Join-Path $root 'src'
-$assets = Join-Path $root 'assets'
-New-Item -ItemType Directory -Force -Path $src, $assets | Out-Null
+$root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
+$srcIco = Join-Path $root "src\app.ico"
+$assetsPng = Join-Path $root "assets\icon-256.png"
 
-function New-RoundedPath([System.Drawing.RectangleF]$rect, [float]$radius) {
-    $path = [System.Drawing.Drawing2D.GraphicsPath]::new()
-    $d = [float]($radius * 2)
-    $arc = [System.Drawing.RectangleF]::new([float]$rect.X, [float]$rect.Y, $d, $d)
-    $path.AddArc($arc, 180, 90)
-    $arc.X = [float]($rect.Right - $d)
-    $path.AddArc($arc, 270, 90)
-    $arc.Y = [float]($rect.Bottom - $d)
-    $path.AddArc($arc, 0, 90)
-    $arc.X = [float]$rect.X
-    $path.AddArc($arc, 90, 90)
-    $path.CloseFigure()
-    return $path
+if ((Test-Path $srcIco) -and -not $Force) {
+    Write-Host "图标已存在，跳过生成（使用 -Force 可重新生成）。"
+    exit 0
 }
 
-function New-IconBitmap([int]$size) {
-    $bmp = [System.Drawing.Bitmap]::new($size, $size, [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
-    $g = [System.Drawing.Graphics]::FromImage($bmp)
-    $g.SmoothingMode = [System.Drawing.Drawing2D.SmoothingMode]::AntiAlias
-    $g.TextRenderingHint = [System.Drawing.Text.TextRenderingHint]::AntiAliasGridFit
-    $g.Clear([System.Drawing.Color]::Transparent)
+Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @"
+using System;
+using System.Drawing;
+using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Drawing.Text;
 
-    $inset = [float][Math]::Max(1, [int]($size * 0.035))
-    $side = [float]($size - 2 * $inset)
-    $rect = [System.Drawing.RectangleF]::new($inset, $inset, $side, $side)
-    $radius = [float]($size * 0.22)
-    $path = New-RoundedPath $rect $radius
-
-    $top = [System.Drawing.Color]::FromArgb(255, 96, 165, 250)
-    $bottom = [System.Drawing.Color]::FromArgb(255, 37, 99, 235)
-    $brush = [System.Drawing.Drawing2D.LinearGradientBrush]::new($rect, $top, $bottom, [float]45)
-    $g.FillPath($brush, $path)
-
-    if ($size -ge 32) {
-        $hw = [float]($rect.Width - 2)
-        $hh = [float]($rect.Height * 0.42)
-        $highlightRect = [System.Drawing.RectangleF]::new([float]($rect.X + 1), [float]($rect.Y + 1), $hw, $hh)
-        $highlightPath = New-RoundedPath $highlightRect ([float]($radius * 0.85))
-        $highlight = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::FromArgb(28, 255, 255, 255))
-        $g.FillPath($highlight, $highlightPath)
-        $highlight.Dispose()
-        $highlightPath.Dispose()
+public static class FontSwapIcon
+{
+    public static GraphicsPath Rounded(RectangleF rect, float radius)
+    {
+        GraphicsPath path = new GraphicsPath();
+        float d = radius * 2f;
+        if (d <= 0f)
+        {
+            path.AddRectangle(rect);
+            return path;
+        }
+        path.AddArc(rect.X, rect.Y, d, d, 180f, 90f);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270f, 90f);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0f, 90f);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90f, 90f);
+        path.CloseFigure();
+        return path;
     }
 
-    $ringInset = [float]($size * 0.13)
-    $ringSide = [float]($size - 2 * $ringInset)
-    $ringRect = [System.Drawing.RectangleF]::new($ringInset, $ringInset, $ringSide, $ringSide)
-    $ringWidth = [float][Math]::Max(1, $size * 0.012)
-    $ringPen = [System.Drawing.Pen]::new([System.Drawing.Color]::FromArgb(34, 255, 255, 255), $ringWidth)
-    $g.DrawEllipse($ringPen, $ringRect)
+    public static void Draw(int size, string path)
+    {
+        using (Bitmap bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb))
+        using (Graphics g = Graphics.FromImage(bmp))
+        {
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            g.Clear(Color.Transparent);
 
-    $fontSize = [float]($size * 0.40)
-    if ($size -le 20) { $fontSize = [float]($size * 0.50) }
-    $font = [System.Drawing.Font]::new('Segoe UI', $fontSize, [System.Drawing.FontStyle]::Bold, [System.Drawing.GraphicsUnit]::Pixel)
-    $format = [System.Drawing.StringFormat]::new()
-    $format.Alignment = [System.Drawing.StringAlignment]::Center
-    $format.LineAlignment = [System.Drawing.StringAlignment]::Center
-    $textRect = [System.Drawing.RectangleF]::new(0, [float](-$size * 0.01), [float]$size, [float]$size)
-    $white = [System.Drawing.SolidBrush]::new([System.Drawing.Color]::White)
-    $g.DrawString('Aa', $font, $white, $textRect, $format)
+            RectangleF rect = new RectangleF(0.5f, 0.5f, size - 1f, size - 1f);
+            float radius = Math.Max(2f, size * 0.22f);
+            using (GraphicsPath shape = Rounded(rect, radius))
+            using (LinearGradientBrush brush = new LinearGradientBrush(
+                new PointF(0f, 0f), new PointF(size, size),
+                Color.FromArgb(255, 96, 165, 250), Color.FromArgb(255, 29, 78, 216)))
+            {
+                g.FillPath(brush, shape);
+            }
 
-    $white.Dispose()
-    $format.Dispose()
-    $font.Dispose()
-    $ringPen.Dispose()
-    $brush.Dispose()
-    $path.Dispose()
-    $g.Dispose()
-    return $bmp
+            // 顶部高光
+            using (GraphicsPath shine = Rounded(new RectangleF(size * 0.12f, size * 0.10f, size * 0.76f, size * 0.34f), radius * 0.6f))
+            using (SolidBrush soft = new SolidBrush(Color.FromArgb(38, 255, 255, 255)))
+            {
+                g.FillPath(soft, shine);
+            }
+
+            string text = "Aa";
+            float fontSize = size * 0.40f;
+            using (FontFamily family = new FontFamily("Segoe UI"))
+            using (Font font = new Font(family, fontSize, FontStyle.Bold, GraphicsUnit.Pixel))
+            using (SolidBrush white = new SolidBrush(Color.White))
+            using (StringFormat format = new StringFormat())
+            {
+                format.Alignment = StringAlignment.Center;
+                format.LineAlignment = StringAlignment.Center;
+                RectangleF box = new RectangleF(0f, size * 0.02f, size, size);
+                g.DrawString(text, font, white, box, format);
+            }
+
+            bmp.Save(path, ImageFormat.Png);
+        }
+    }
 }
+"@
 
 $sizes = @(16, 24, 32, 48, 64, 128, 256)
-$pngData = [System.Collections.Generic.List[byte[]]]::new()
+$frames = New-Object System.Collections.ArrayList
+
+New-Item -ItemType Directory -Force -Path (Split-Path -Parent $assetsPng) | Out-Null
+
 foreach ($size in $sizes) {
-    $bmp = New-IconBitmap $size
-    if ($size -eq 256) {
-        $bmp.Save((Join-Path $assets 'icon-256.png'), [System.Drawing.Imaging.ImageFormat]::Png)
-    }
-    $ms = [System.IO.MemoryStream]::new()
-    $bmp.Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
-    $pngData.Add($ms.ToArray())
-    $ms.Dispose()
-    $bmp.Dispose()
+    $temp = Join-Path $env:TEMP ("fontswap-icon-" + $size + ".png")
+    [FontSwapIcon]::Draw($size, $temp)
+    $bytes = [System.IO.File]::ReadAllBytes($temp)
+    Remove-Item -LiteralPath $temp -Force
+    [void]$frames.Add([pscustomobject]@{ Size = $size; Data = $bytes })
 }
 
-$icoPath = Join-Path $src 'app.ico'
-$fs = [System.IO.File]::Open($icoPath, [System.IO.FileMode]::Create)
-$writer = [System.IO.BinaryWriter]::new($fs)
+# 组装 ICO（内嵌 PNG 数据）
+$count = $frames.Count
+$headerSize = 6
+$entrySize = 16
+$offset = $headerSize + $entrySize * $count
+
+$stream = New-Object System.IO.MemoryStream
+$writer = New-Object System.IO.BinaryWriter($stream)
 $writer.Write([UInt16]0)
 $writer.Write([UInt16]1)
-$writer.Write([UInt16]$sizes.Count)
-$offset = 6 + 16 * $sizes.Count
-for ($i = 0; $i -lt $sizes.Count; $i++) {
-    $size = $sizes[$i]
-    $dimension = [byte]$(if ($size -ge 256) { 0 } else { $size })
-    $writer.Write($dimension)
-    $writer.Write($dimension)
-    $writer.Write([byte]0)
-    $writer.Write([byte]0)
+$writer.Write([UInt16]$count)
+
+foreach ($frame in $frames) {
+    $dim = if ($frame.Size -ge 256) { 0 } else { $frame.Size }
+    $writer.Write([Byte]$dim)
+    $writer.Write([Byte]$dim)
+    $writer.Write([Byte]0)
+    $writer.Write([Byte]0)
     $writer.Write([UInt16]1)
     $writer.Write([UInt16]32)
-    $writer.Write([UInt32]$pngData[$i].Length)
+    $writer.Write([UInt32]$frame.Data.Length)
     $writer.Write([UInt32]$offset)
-    $offset += $pngData[$i].Length
+    $offset += $frame.Data.Length
 }
-foreach ($data in $pngData) {
-    $writer.Write($data)
-}
-$writer.Flush()
-$writer.Dispose()
-$fs.Dispose()
 
-Write-Host "Icon written: $icoPath"
+foreach ($frame in $frames) {
+    $writer.Write($frame.Data)
+}
+
+$writer.Flush()
+[System.IO.File]::WriteAllBytes($srcIco, $stream.ToArray())
+$writer.Close()
+$stream.Close()
+
+[FontSwapIcon]::Draw(256, $assetsPng)
+
+Write-Host ("已生成 " + $srcIco)
+Write-Host ("已生成 " + $assetsPng)

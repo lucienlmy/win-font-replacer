@@ -1,193 +1,156 @@
-# Windows 全局字体替换器
+# Windows 全局字体替换器 2.0
 
-一个安全、可逆的 Windows 字体替换小工具。选择任意已安装字体，一键应用到系统界面与传统窗口；首次应用自动保存原始设置，随时可以一键恢复。
+> **全新升级版**：只换字形，不动字号，不动图标大小。
 
-> 仓库地址：<https://github.com/senseiri/win-font-replacer>
+这是 1.x 的继任版本，界面与内核全部重写。程序名、图标和便携数据目录沿用原来的，老用户直接覆盖安装即可无缝升级。
 
-## 下载
+## 为什么值得升级
 
-- [GitHub Releases](https://github.com/senseiri/win-font-replacer/releases) 下载最新的 `WinFontReplacer-vX.Y.Z.zip`
-- 或克隆源码后运行 `build.ps1` 自行编译
+1.0.x 在替换界面字体时，会按当前 DPI 重新计算一遍字号（96 DPI 写 `-12`，144 DPI 写 `-18`），把你在「设置 → 辅助功能 → 文本大小」里调过的值覆盖掉。它还同时写系统级（HKLM）的字体替换与字体链接，必须管理员权限。
 
-![主界面](assets/screenshot-main.png)
+2.0 只做一件事：**改掉界面字体族的名字，其余字段一个字节都不碰。**
 
-应用后新打开的传统 Win32 程序（记事本）标题栏与菜单效果：
+- 字号（`lfHeight`）原样保留 → 系统自带的字体大小调整、DPI 缩放、文本缩放继续生效
+- 只写当前用户（HKCU）→ 不需要管理员权限
+- 完全不碰图标大小、图标间距、DPI 设置
 
-![传统窗口效果](assets/screenshot-effect.png)
+## 截图
 
-## 功能特点
-
-- **字体选择**：读取系统已安装字体，支持搜索，并用目标字体实时预览中文、英文和数字。
-- **字体回退映射**：为 `Segoe UI`、`Microsoft YaHei UI`、`Microsoft YaHei`、`MS Shell Dlg`、`MS Shell Dlg 2` 写入替换/回退映射。
-- **传统窗口字体**：修改标题栏、菜单、消息框、状态栏、小标题栏、图标文字等 LOGFONT，并按系统 DPI 自动选择合适字号后立即刷新。
-- **DPI 自适应**：根据系统 DPI 计算字号（96 DPI 用 -12，144 DPI 用 -18），避免替换后字体变小。
-- **字体链接回退**：可选把目标字体加入 `FontLink\SystemLink`，补充某些程序请求系统字体时缺失的字形。
-- **一键恢复**：恢复到首次使用本工具前的状态，不需要卸载字体或手动改注册表。
-- **自动回滚**：应用或恢复过程中任何一步失败，会自动写回操作前的快照。
-- **按需提权**：浏览字体不需要管理员权限，只有点击“应用”或“恢复”时才请求 UAC。
-- **本地运行**：不联网、不安装服务、不下载字体、不收集数据。
-
-## 系统要求
-
-- Windows 10 / Windows 11（64 位）
-- .NET Framework 4.8（Windows 10 1903 及以上通常已自带）
-- 点击应用/恢复时需要管理员权限
-
-## 快速使用
-
-1. 解压后双击 `WinFontReplacer.exe`，无需安装。
-2. 在左侧列表选择字体，右侧会实时预览。
-3. 按需勾选：
-   - **同时修改标题栏、菜单和对话框字体**：推荐保持勾选。
-   - **启用字体链接，自动补齐缺失字形**：推荐保持勾选。
-4. 点击 **应用全局字体**，在 UAC 窗口中确认。
-5. 标题栏、菜单、对话框、状态栏和桌面图标文字会立即刷新；其他已经打开的程序建议重启，或注销后重新登录。
-6. 想还原时点击 **一键恢复**，确认后即可恢复原始设置。
-
-![确认对话框](assets/screenshot-dialog.png)
-
-## 它到底改了什么
-
-本工具只修改注册表，**不会替换或删除 `C:\Windows\Fonts` 下的任何字体文件**。
-
-| 注册表位置 | 修改内容 |
+| 已应用替换 | 从 1.x 升级（自动接管） |
 | --- | --- |
-| `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\FontSubstitutes` | 为 `Segoe UI`、`Microsoft YaHei UI`、`Microsoft YaHei`、`MS Shell Dlg`、`MS Shell Dlg 2` 写入替换/回退映射 |
-| `HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\FontLink\SystemLink` | 把目标字体的文件与字体名加入 `Segoe UI`、`Microsoft YaHei UI`、`MS Shell Dlg` 的字体链接列表首位 |
-| `HKCU\Control Panel\Desktop\WindowMetrics` | 修改 `CaptionFont`、`MenuFont`、`MessageFont`、`StatusFont`、`SmCaptionFont`、`IconFont` 六个 LOGFONT 的字体名 |
+| ![主界面](assets/screenshot-applied.png) | ![升级提示](assets/screenshot-upgrade.png) |
 
-写入完成后程序会调用 `SystemParametersInfo(SPI_SETNONCLIENTMETRICS)` 和 `SPI_SETICONMETRICS` 立即刷新传统窗口字体，并广播 `WM_SETTINGCHANGE`。字号按系统 DPI 计算：96 DPI 为 `-12`，144 DPI 为 `-18`，因此不会因为写死字号而变小。
+## 与 1.0.x 的区别
 
-> 注意：Windows 对**已经安装**的字体通常不会用 `FontSubstitutes` 强行覆盖，因此真正可见的变化主要来自 `WindowMetrics`（标题栏、菜单、对话框等）以及字体链接回退。开始菜单、设置等 DirectWrite 界面仍可能使用系统内置字体。
+| | 1.0.x | 2.0 |
+| --- | --- | --- |
+| 修改位置 | HKLM 字体替换 + 字体链接 + HKCU 窗口字体 | 只改 HKCU 六项窗口字体 |
+| 字号 | 按 DPI 重新计算（覆盖用户设置） | 原样保留 |
+| 管理员权限 | 需要 | 不需要 |
+| 图标大小 | 不处理 | 不处理 |
+| 回退 | 恢复 11 项注册表值 | 恢复六项窗口字体 |
+| 界面 | WinForms 侧栏 | 重写为单窗口卡片式界面 |
 
-### 备份与恢复机制
+## 老用户怎么升级
 
-程序优先把数据放在 **exe 同目录的 `WinFontReplacerData` 文件夹**（绿色便携）。如果该目录不可写，会自动改用：
+1. 退出 1.x；
+2. 用 2.0 的 `WinFontReplacer.exe` 覆盖旧目录里的同名文件；
+3. 启动新版。如果检测到旧版的 `baseline.xml`，会提示「已接管旧版 WinFontReplacer 的备份」，此时点「一键回退」就能回到 1.x 安装前的字体与字号。
 
-1. `%LOCALAPPDATA%\WinFontReplacer`
-2. 如果检测到旧版备份 `C:\ProgramData\WinFontReplacer\baseline.xml`，继续使用旧位置
-3. 最后回退到 `%TEMP%\WinFontReplacer`
+旧版备份会在这几个位置自动查找：
 
-首次点击“应用”时，程序会在数据目录中建立基线备份：
+- `%ProgramData%\WinFontReplacer\`
+- `<exe 所在目录>\WinFontReplacerData\`
+- `%LOCALAPPDATA%\WinFontReplacer\`
+- `%TEMP%\WinFontReplacer\`
 
-```text
-<数据目录>\
-├─ baseline.xml                 # 首次使用前的原始设置（一键恢复使用）
-├─ backups\
-│  ├─ before-apply-*.xml        # 每次应用前的快照
-│  └─ before-restore-*.xml      # 每次恢复前的快照
-├─ logs\
-│  └─ operation-*.log           # 操作日志
-├─ emergency-fontsubstitutes.reg
-├─ emergency-fontlink.reg
-└─ emergency-windowmetrics.reg
+如果旧版放在别的地方，也可以用命令行指定：
+
+```powershell
+.\WinFontReplacer.exe --import-legacy "D:\旧软件目录\WinFontReplacerData\baseline.xml"
 ```
 
-- **一键恢复**读取 `baseline.xml`，按“值”精确恢复；如果某个值原本不存在，会把它删除。
-- 应用/恢复中途出错时，程序会立即用操作前的快照自动回滚，并在日志中记录原因。
-- `emergency-*.reg` 是额外的保险：双击导入可以把对应注册表项整体恢复到首次使用前的状态。它不会删除后来新增的值，因此优先使用程序内的“一键恢复”。
-- 程序使用全局互斥量，避免两个字体操作同时执行。
+数据目录同样沿用旧规则：优先便携模式 `<exe 所在目录>\WinFontReplacerData`，其次 `%LOCALAPPDATA%\WinFontReplacer`。
 
-## 适用范围与限制（请阅读）
+## 原理：只改一个字段
 
-这是一个**注册表 + 系统参数级**的字体替换工具，不是系统字体文件打补丁工具：
+系统把标题栏、菜单、状态栏、对话框、消息框和桌面图标文字的字体，分别存在注册表 `HKCU\Control Panel\Desktop\WindowMetrics` 的六个值里。每个值都是一个 92 字节的 `LOGFONTW` 结构：
 
-- **会立即生效**：新打开的 Win32/GDI 程序、传统标题栏、菜单、消息框、状态栏、对话框、桌面图标文字。
-- **可能不生效**：Windows 10/11 的开始菜单、设置、部分 UWP 应用和 DirectWrite 界面会直接加载 Segoe UI / Segoe UI Variable，不遵守传统窗口字体设置。
-- `FontSubstitutes` 对已经安装的字体通常不会强行覆盖，只作为缺失字体时的回退；不要把它当作“全局替换”的唯一依据。
-- 某些程序会缓存字体；应用后请重启对应程序，或注销后重新登录。
-- `HKCU\Control Panel\Desktop\WindowMetrics` 是**当前用户**的设置；`HKLM` 下的字体链接/映射是**所有用户**的。
-- 如果 UAC 提权时输入了**另一个管理员账户**的凭据，当前用户的窗口字体可能被写到那个管理员账户下。请从需要修改的账户运行，并使用该账户的管理员凭据。
-- 若要实现 100% 替换所有 DirectWrite 界面，需要替换受保护的系统字体文件；这有导致界面异常甚至无法正常登录的风险，本工具**故意不做**。
+| 偏移 | 字段 | 含义 | 2.0 是否修改 |
+| --- | --- | --- | --- |
+| 0 | `lfHeight` | 字号（负值 = 字符高度像素） | **不改** |
+| 4 | `lfWidth` | 字符宽度 | 不改 |
+| 8 / 12 | `lfEscapement` / `lfOrientation` | 旋转角度 | 不改 |
+| 16 | `lfWeight` | 字重 | 不改 |
+| 20–22 | 斜体 / 下划线 / 删除线 | 样式 | 不改 |
+| 23–27 | 字符集 / 精度 / 质量 / 间距族 | 渲染参数 | 不改 |
+| **28** | **`lfFaceName`** | **字体族名（64 字节 UTF-16LE）** | **只改这里** |
 
-如果你需要的是“所有界面绝对统一”的深度替换，请先备份系统并了解相关风险，再考虑专门的字体文件补丁方案。
+六项分别是：
 
-## 常见问题
+| 注册表值 | 影响范围 |
+| --- | --- |
+| `CaptionFont` | 窗口标题栏 |
+| `SmCaptionFont` | 小标题栏、部分工具窗口 |
+| `MenuFont` | 菜单栏、右键菜单 |
+| `StatusFont` | 状态栏 |
+| `MessageFont` | 对话框、消息框 |
+| `IconFont` | 桌面图标文字（可选） |
 
-**应用后字体没有变化？**
+写入前会逐字节比对「除 `lfFaceName` 外完全一致」，写入后广播 `WM_SETTINGCHANGE`（`WindowMetrics` 与 `Fonts`）通知各窗口刷新。
 
-先注销并重新登录。部分程序需要完全退出再打开；Windows 11 的部分系统界面可能不受注册表映射影响，见上面的限制说明。
+## 使用方法
 
-**点击应用没有弹出 UAC？**
+1. 打开程序，在列表里选择字体（可搜索，右侧用该字体渲染预览）；
+2. 需要连桌面图标文字一起换时，打开「同时替换桌面图标文字」；
+3. 点「应用字体」；
+4. 部分窗口（例如已经打开的资源管理器）没刷新时，点「重启资源管理器」。
 
-如果当前程序已经以管理员身份运行，会直接执行；否则 Windows 会弹出 UAC。若取消了 UAC，不会做任何修改。
+程序自身的界面固定使用 Microsoft YaHei UI，不随系统字体变化。
 
-**Windows SmartScreen 提示未知发布者？**
+## 一键回退
 
-程序没有代码签名，这是正常提示。确认文件来源可信后，可选择“更多信息 → 仍要运行”。一些安全软件也可能对注册表字体修改报警。
+第一次应用前会把六项窗口字体的**完整原始值**（含数据类型）备份到：
 
-**如何完全卸载？**
+- 注册表：`HKCU\Software\WinFontReplacer\Backup`
+- 文件：`<数据目录>\backup.txt`
 
-先点击“一键恢复”，确认恢复成功后，删除程序旁（或 `%LOCALAPPDATA%\WinFontReplacer`、旧版 `C:\ProgramData\WinFontReplacer`）的数据文件夹即可。程序本身是绿色免安装的，删除 exe 即可。
+点「一键回退」即可恢复；恢复后备份会被删除。回退不影响字号——备份里存的就是原始字节。
 
-**恢复失败怎么办？**
+## 兼容性
 
-查看数据目录下 `logs` 中最近的日志；也可以导入 `emergency-*.reg` 作为应急恢复。若界面已经异常，可在安全模式下导入这些 `.reg` 文件。
+- Windows 10 / 11（64 位与 32 位均可运行）
+- 只影响当前登录用户，不改系统级设置，不改其他用户的配置
+- 不改变图标大小、图标间距、DPI 缩放与文本缩放设置
+- 部分现代界面（设置、开始菜单、UWP 应用、任务栏弹出面板）由 DirectWrite 渲染，不读取这六项设置，因此不受影响
+- 换上的字体需要已安装，否则系统会回退到默认字体
 
-**字体列表里没有想要的字体？**
+## 命令行
 
-请先通过 Windows 设置安装该字体，然后重新打开本工具。
+```powershell
+.\WinFontReplacer.exe --status
+.\WinFontReplacer.exe --apply "微软雅黑"
+.\WinFontReplacer.exe --apply "微软雅黑" --icon
+.\WinFontReplacer.exe --restore
+.\WinFontReplacer.exe --import-legacy [baseline.xml 路径]
+.\WinFontReplacer.exe --self-test
+```
+
+命令行结果写到 `<数据目录>\cli-result.txt`。因为程序是窗口子系统，脚本里请用 `Start-Process -Wait` 等待它结束。
+
+## 数据与日志
+
+| 内容 | 位置 |
+| --- | --- |
+| 便携数据目录 | `<exe 所在目录>\WinFontReplacerData\` |
+| 用户数据目录 | `%LOCALAPPDATA%\WinFontReplacer\` |
+| 回退备份 | `HKCU\Software\WinFontReplacer\Backup` 与 `backup.txt` |
+| 设置 | `HKCU\Software\WinFontReplacer\Settings` |
+| 操作日志 | `<数据目录>\logs\winfontreplacer-YYYYMMDD.log` |
 
 ## 从源码构建
 
-需要 .NET Framework 4.x 自带的 `csc.exe`（Windows 10/11 默认存在）。
+需要 .NET Framework 4.x 自带的 C# 编译器（系统自带，无需安装 SDK）：
 
 ```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\build.ps1
+powershell -ExecutionPolicy Bypass -File .\build.ps1
 ```
 
-输出：
+产物为 `dist\WinFontReplacer.exe`（单文件，无依赖）。图标沿用 1.x 的 `src\app.ico`；只有图标缺失时才调用 `tools\make-icon.ps1` 重新生成。
 
-```text
-dist\WinFontReplacer.exe
+## 目录结构
+
+```
+build.ps1              构建脚本
+src\                   源码（C# 5，兼容 .NET Framework 4.x 自带编译器）
+tools\make-icon.ps1    生成图标（仅在缺少 app.ico 时使用）
+tools\capture-ui.ps1   启动程序并截图
+assets\                截图与图标
+dist\                  构建产物
 ```
 
-运行自检（不会修改系统字体设置）：
+## 已知限制
 
-```powershell
-.\dist\WinFontReplacer.exe --self-test .\selftest-result.txt
-```
-
-查看自检结果：
-
-```powershell
-Get-Content .\selftest-result.txt -Encoding UTF8
-```
-
-### 源码结构
-
-```text
-src\
-├─ Program.cs              # 入口、UAC 子进程、单实例
-├─ MainForm.cs             # 主界面
-├─ Theme.cs                # 配色、卡片、按钮、搜索框
-├─ SidebarPanel.cs         # 左侧状态栏
-├─ PreviewPanel.cs         # 字体预览
-├─ FontCatalog.cs          # 已安装字体枚举
-├─ FontFileIndex.cs        # 字体文件与字体名解析（用于 FontLink）
-├─ LogFont.cs              # LOGFONT 二进制读写
-├─ RegistrySupport.cs      # 注册表快照/恢复、备份 XML
-├─ BackupStore.cs          # 备份目录、状态、日志、应急 .reg
-├─ AppPaths.cs             # 便携数据目录与提权通信目录解析
-├─ Operations.cs           # 应用/恢复、自动回滚、提权执行
-├─ Dialogs.cs              # 自定义确认/结果对话框
-├─ SelfTest.cs             # 非破坏性自检
-├─ App.manifest            # asInvoker、DPI、Win10/11 兼容
-└─ AssemblyInfo.cs
-tools\
-├─ make-icon.ps1           # 生成 app.ico
-└─ capture-ui.ps1          # 截取界面截图
-```
-
-## 开源协议
-
-本项目使用 MIT License，详见 [LICENSE](LICENSE)。
-
-## 风险提示
-
-修改系统字体属于系统级设置。虽然本工具做了基线备份、操作快照和自动回滚，仍建议在应用前保存工作，并确保自己有能力通过安全模式或 `.reg` 备份恢复。请在理解上述限制后使用。
-
----
-
-版本：v1.0.3  
-测试环境：Windows 10 22H2（19045）、.NET Framework 4.8
+- 设置、开始菜单、UWP 应用等 DirectWrite 界面不读取这六项，替换后不会变化；
+- 只影响当前用户，切换用户或登录界面不受影响；
+- 卸载替换所用字体后，「一键回退」会回退到系统默认字体。

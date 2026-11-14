@@ -1,132 +1,303 @@
 using System;
+using System.Runtime.InteropServices;
 using System.Text;
 
-namespace WinFontReplacer
+namespace FontSwap
 {
-    internal static class LogFontHelper
+    /// <summary>Win32 LOGFONTW 结构（92 字节，字体名 32 个 UTF-16 字符）。</summary>
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    internal struct LOGFONT
+    {
+        public int lfHeight;
+        public int lfWidth;
+        public int lfEscapement;
+        public int lfOrientation;
+        public int lfWeight;
+        public byte lfItalic;
+        public byte lfUnderline;
+        public byte lfStrikeOut;
+        public byte lfCharSet;
+        public byte lfOutPrecision;
+        public byte lfClipPrecision;
+        public byte lfQuality;
+        public byte lfPitchAndFamily;
+
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string lfFaceName;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    internal struct NONCLIENTMETRICS
+    {
+        public uint cbSize;
+        public int iBorderWidth;
+        public int iScrollWidth;
+        public int iScrollHeight;
+        public int iCaptionWidth;
+        public int iCaptionHeight;
+        public LOGFONT lfCaptionFont;
+        public int iSmCaptionWidth;
+        public int iSmCaptionHeight;
+        public LOGFONT lfSmCaptionFont;
+        public int iMenuWidth;
+        public int iMenuHeight;
+        public LOGFONT lfMenuFont;
+        public LOGFONT lfStatusFont;
+        public LOGFONT lfMessageFont;
+        public int iPaddedBorderWidth;
+    }
+
+    internal static class NativeMethods
+    {
+        public const uint SPI_GETNONCLIENTMETRICS = 0x0029;
+        public const uint SPI_GETICONTITLELOGFONT = 0x001F;
+
+        public const uint WM_SETTINGCHANGE = 0x001A;
+        public const uint SMTO_ABORTIFHUNG = 0x0002;
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref NONCLIENTMETRICS pvParam, uint fWinIni);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern bool SystemParametersInfo(uint uiAction, uint uiParam, ref LOGFONT pvParam, uint fWinIni);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+        public static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd, uint msg, IntPtr wParam, string lParam,
+            uint fuFlags, uint uTimeout, out IntPtr lpdwResult);
+
+        public const uint EM_SETCUEBANNER = 0x1501;
+        public const uint WM_NCLBUTTONDOWN = 0x00A1;
+        public const int HTCAPTION = 2;
+
+        [DllImport("user32.dll")]
+        public static extern bool ReleaseCapture();
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
+        public static extern IntPtr SendMessagePtr(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SendMessageW")]
+        public static extern IntPtr SendMessageText(IntPtr hWnd, uint msg, IntPtr wParam, string lParam);
+
+        public static IntPtr BroadcastSettingChange(string area)
+        {
+            IntPtr result;
+            try
+            {
+                return SendMessageTimeout(
+                    new IntPtr(0xffff), WM_SETTINGCHANGE, IntPtr.Zero, area,
+                    SMTO_ABORTIFHUNG, 2000, out result);
+            }
+            catch
+            {
+                return IntPtr.Zero;
+            }
+        }
+    }
+
+    /// <summary>LOGFONTW 二进制编解码：只替换字体名，其余字段逐字节保持不变。</summary>
+    internal static class LogFontCodec
     {
         public const int Size = 92;
         public const int FaceOffset = 28;
         public const int FaceBytes = 64;
+        public const int MaxFaceLength = 31;
 
-        public static string GetFaceName(byte[] value)
+        public static string GetFace(byte[] data)
         {
-            if (value == null || value.Length < FaceOffset + FaceBytes)
+            if (data == null || data.Length < FaceOffset + FaceBytes)
             {
                 return string.Empty;
             }
 
-            string name = Encoding.Unicode.GetString(value, FaceOffset, FaceBytes);
-            int nullIndex = name.IndexOf('\0');
-            if (nullIndex >= 0)
+            string name = Encoding.Unicode.GetString(data, FaceOffset, FaceBytes);
+            int end = name.IndexOf('\0');
+            if (end >= 0)
             {
-                name = name.Substring(0, nullIndex);
+                name = name.Substring(0, end);
             }
             return name.Trim();
         }
 
-        public static byte[] WithFaceName(byte[] existing, string faceName)
+        /// <summary>复制原数据，只把 lfFaceName 改为 faceName，其他字节保持原样。</summary>
+        public static byte[] WithFace(byte[] data, string faceName)
         {
-            return WithFaceName(existing, faceName, -12);
-        }
-
-        public static byte[] WithFaceName(byte[] existing, string faceName, int defaultHeight)
-        {
-            byte[] data;
-            if (existing != null && existing.Length == Size)
+            if (data == null || data.Length != Size)
             {
-                data = (byte[])existing.Clone();
+                throw new ArgumentException("LOGFONT 数据长度不是 92 字节。", "data");
             }
-            else
+            if (faceName == null)
             {
-                data = CreateDefault(defaultHeight);
+                faceName = string.Empty;
             }
 
-            // Always write a sane height. Windows normalizes heights when
-            // SPI_SETNONCLIENTMETRICS is used, and reusing that normalized
-            // value on the next apply made the font shrink.
-            SetInt32(data, 0, defaultHeight);
+            byte[] result = (byte[])data.Clone();
+            Array.Clear(result, FaceOffset, FaceBytes);
 
-            int weight = ReadInt32(data, 16);
-            if (weight < 100 || weight > 900)
-            {
-                SetInt32(data, 16, 400);
-            }
-
-            // SystemParametersInfo rejects a face change when the LOGFONT
-            // retains an unusual height/quality from the current theme.
-            SetInt32(data, 4, 0);
-            SetInt32(data, 8, 0);
-            SetInt32(data, 12, 0);
-            data[20] = 0;
-            data[21] = 0;
-            data[22] = 0;
-            data[23] = 1;
-            data[24] = 0;
-            data[25] = 0;
-            data[26] = 5;
-            data[27] = 0;
-
-            Array.Clear(data, FaceOffset, FaceBytes);
-            string face = faceName ?? string.Empty;
+            string face = faceName.Trim();
             if (face.Length > 31)
             {
                 face = face.Substring(0, 31);
             }
-
             byte[] bytes = Encoding.Unicode.GetBytes(face);
-            int copy = Math.Min(bytes.Length, FaceBytes - 2);
-            Array.Copy(bytes, 0, data, FaceOffset, copy);
-            return data;
-        }
-
-        public static byte[] CreateDefault()
-        {
-            return CreateDefault(-12);
-        }
-
-        public static byte[] CreateDefault(int height)
-        {
-            byte[] data = new byte[Size];
-            SetInt32(data, 0, height);  // lfHeight
-            SetInt32(data, 4, 0);       // lfWidth
-            SetInt32(data, 8, 0);       // lfEscapement
-            SetInt32(data, 12, 0);      // lfOrientation
-            SetInt32(data, 16, 400);    // lfWeight
-            data[20] = 0;               // lfItalic
-            data[21] = 0;               // lfUnderline
-            data[22] = 0;               // lfStrikeOut
-            data[23] = 1;               // lfCharSet = DEFAULT_CHARSET
-            data[24] = 0;               // lfOutPrecision
-            data[25] = 0;               // lfClipPrecision
-            data[26] = 5;               // lfQuality = CLEARTYPE_QUALITY
-            data[27] = 0;               // lfPitchAndFamily
-            return data;
-        }
-
-        public static int ReadHeight(byte[] value)
-        {
-            if (value == null || value.Length < 4)
+            if (bytes.Length > FaceBytes - 2)
             {
-                return -12;
+                Array.Resize(ref bytes, FaceBytes - 2);
             }
-            return ReadInt32(value, 0);
+            Array.Copy(bytes, 0, result, FaceOffset, bytes.Length);
+            return result;
         }
 
-        private static int ReadInt32(byte[] data, int offset)
+        public static bool SameExceptFace(byte[] a, byte[] b)
         {
-            return data[offset] |
-                (data[offset + 1] << 8) |
-                (data[offset + 2] << 16) |
-                (data[offset + 3] << 24);
+            if (a == null || b == null || a.Length != b.Length)
+            {
+                return false;
+            }
+
+            int cutStart = FaceOffset;
+            int cutEnd = Math.Min(FaceOffset + FaceBytes, a.Length);
+            for (int i = 0; i < a.Length; i++)
+            {
+                if (i >= cutStart && i < cutEnd)
+                {
+                    continue;
+                }
+                if (a[i] != b[i])
+                {
+                    return false;
+                }
+            }
+            return true;
         }
 
-        private static void SetInt32(byte[] data, int offset, int value)
+        public static int Height(byte[] data)
         {
-            data[offset] = (byte)(value & 0xff);
-            data[offset + 1] = (byte)((value >> 8) & 0xff);
-            data[offset + 2] = (byte)((value >> 16) & 0xff);
-            data[offset + 3] = (byte)((value >> 24) & 0xff);
+            if (data == null || data.Length < 4)
+            {
+                return 0;
+            }
+            return BitConverter.ToInt32(data, 0);
+        }
+
+        public static int Weight(byte[] data)
+        {
+            if (data == null || data.Length < 20)
+            {
+                return 400;
+            }
+            return BitConverter.ToInt32(data, 16);
+        }
+
+        public static byte[] FromStruct(LOGFONT lf)
+        {
+            IntPtr ptr = Marshal.AllocHGlobal(Size);
+            try
+            {
+                Marshal.StructureToPtr(lf, ptr, false);
+                byte[] data = new byte[Size];
+                Marshal.Copy(ptr, data, 0, Size);
+                return data;
+            }
+            finally
+            {
+                Marshal.FreeHGlobal(ptr);
+            }
+        }
+
+        /// <summary>从系统当前默认字体构造 LOGFONT（用于注册表值缺失的兜底）。</summary>
+        public static byte[] DefaultFor(string metricName)
+        {
+            if (string.Equals(metricName, "IconFont", StringComparison.OrdinalIgnoreCase))
+            {
+                LOGFONT icon = new LOGFONT();
+                icon.lfHeight = -12;
+                icon.lfWeight = 400;
+                icon.lfCharSet = 1;
+                icon.lfQuality = 5;
+                icon.lfFaceName = "Segoe UI";
+                if (NativeMethods.SystemParametersInfo(NativeMethods.SPI_GETICONTITLELOGFONT, (uint)Size, ref icon, 0))
+                {
+                    return FromStruct(icon);
+                }
+                return FromStruct(icon);
+            }
+
+            NONCLIENTMETRICS metrics = new NONCLIENTMETRICS();
+            metrics.cbSize = (uint)Marshal.SizeOf(typeof(NONCLIENTMETRICS));
+            if (!NativeMethods.SystemParametersInfo(NativeMethods.SPI_GETNONCLIENTMETRICS, metrics.cbSize, ref metrics, 0))
+            {
+                throw new InvalidOperationException("无法读取系统默认窗口字体（SPI_GETNONCLIENTMETRICS 失败）。");
+            }
+
+            if (string.Equals(metricName, "CaptionFont", StringComparison.OrdinalIgnoreCase))
+            {
+                return FromStruct(metrics.lfCaptionFont);
+            }
+            if (string.Equals(metricName, "SmCaptionFont", StringComparison.OrdinalIgnoreCase))
+            {
+                return FromStruct(metrics.lfSmCaptionFont);
+            }
+            if (string.Equals(metricName, "MenuFont", StringComparison.OrdinalIgnoreCase))
+            {
+                return FromStruct(metrics.lfMenuFont);
+            }
+            if (string.Equals(metricName, "StatusFont", StringComparison.OrdinalIgnoreCase))
+            {
+                return FromStruct(metrics.lfStatusFont);
+            }
+            return FromStruct(metrics.lfMessageFont);
+        }
+    }
+
+    internal static class HexText
+    {
+        public static string Format(byte[] data)
+        {
+            if (data == null || data.Length == 0)
+            {
+                return string.Empty;
+            }
+
+            StringBuilder builder = new StringBuilder(data.Length * 3);
+            for (int i = 0; i < data.Length; i++)
+            {
+                if (i > 0)
+                {
+                    builder.Append(' ');
+                }
+                builder.Append(data[i].ToString("X2"));
+            }
+            return builder.ToString();
+        }
+
+        public static byte[] Parse(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+            {
+                return new byte[0];
+            }
+
+            StringBuilder digits = new StringBuilder(text.Length);
+            foreach (char c in text)
+            {
+                if (Uri.IsHexDigit(c))
+                {
+                    digits.Append(c);
+                }
+            }
+
+            if (digits.Length == 0 || (digits.Length & 1) != 0)
+            {
+                return new byte[0];
+            }
+
+            byte[] data = new byte[digits.Length / 2];
+            for (int i = 0; i < data.Length; i++)
+            {
+                data[i] = Convert.ToByte(digits.ToString(i * 2, 2), 16);
+            }
+            return data;
         }
     }
 }

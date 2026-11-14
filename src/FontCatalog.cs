@@ -4,157 +4,112 @@ using System.Drawing;
 using System.Drawing.Text;
 using System.Globalization;
 
-namespace WinFontReplacer
+namespace FontSwap
 {
-    internal sealed class FontListItem
-    {
-        public string FamilyName { get; set; }
-        public string DisplayName { get; set; }
-        public string Subtitle { get; set; }
-
-        public override string ToString()
-        {
-            return DisplayName;
-        }
-    }
-
     internal static class FontCatalog
     {
-        private static readonly string[] SymbolNameParts = new string[]
-        {
-            "MDL2",
-            "Fluent Icons",
-            "Segoe UI Emoji",
-            "Segoe UI Symbol",
-            "Webdings",
-            "Wingdings",
-            "Marlett",
-            "Material Icons",
-            "Font Awesome",
-            "Cambria Math"
-        };
+        private static List<string> _all;
 
-        public static List<FontListItem> Load()
+        public static List<string> All
         {
-            List<FontListItem> result = new List<FontListItem>();
-            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            using (InstalledFontCollection collection = new InstalledFontCollection())
+            get
             {
-                foreach (FontFamily family in collection.Families)
+                if (_all == null)
                 {
-                    string name;
-                    try
-                    {
-                        name = family.Name;
-                    }
-                    catch
-                    {
-                        continue;
-                    }
+                    _all = Load();
+                }
+                return _all;
+            }
+        }
 
-                    if (string.IsNullOrEmpty(name) || name.StartsWith("@", StringComparison.Ordinal))
+        private static List<string> Load()
+        {
+            List<string> names = new List<string>();
+            HashSet<string> seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            try
+            {
+                using (InstalledFontCollection collection = new InstalledFontCollection())
+                {
+                    foreach (FontFamily family in collection.Families)
                     {
-                        continue;
+                        string name = family.Name;
+                        if (string.IsNullOrEmpty(name) || name.StartsWith("@", StringComparison.Ordinal))
+                        {
+                            continue;
+                        }
+                        if (seen.Add(name))
+                        {
+                            names.Add(name);
+                        }
                     }
-
-                    if (!seen.Add(name))
-                    {
-                        continue;
-                    }
-
-                    bool available;
-                    try
-                    {
-                        available = family.IsStyleAvailable(FontStyle.Regular);
-                    }
-                    catch
-                    {
-                        available = false;
-                    }
-                    if (!available || IsSymbolFont(name))
-                    {
-                        continue;
-                    }
-
-                    string localized = GetLocalizedName(family);
-                    string display = string.IsNullOrEmpty(localized) ? name : localized;
-                    string subtitle = string.Equals(display, name, StringComparison.OrdinalIgnoreCase)
-                        ? name
-                        : name;
-
-                    result.Add(new FontListItem
-                    {
-                        FamilyName = name,
-                        DisplayName = display,
-                        Subtitle = subtitle
-                    });
                 }
             }
-
-            result.Sort(delegate(FontListItem a, FontListItem b)
+            catch
             {
-                return StringComparer.CurrentCultureIgnoreCase.Compare(a.DisplayName, b.DisplayName);
-            });
+            }
 
+            names.Sort(StringComparer.Create(CultureInfo.CurrentCulture, true));
+            return names;
+        }
+
+        public static List<string> Filter(string query)
+        {
+            List<string> all = All;
+            if (string.IsNullOrEmpty(query) || query.Trim().Length == 0)
+            {
+                return all;
+            }
+
+            string needle = query.Trim();
+            List<string> result = new List<string>();
+            foreach (string name in all)
+            {
+                if (name.IndexOf(needle, StringComparison.CurrentCultureIgnoreCase) >= 0 ||
+                    name.IndexOf(needle, StringComparison.OrdinalIgnoreCase) >= 0)
+                {
+                    result.Add(name);
+                }
+            }
             return result;
         }
 
-        private static bool IsSymbolFont(string name)
-        {
-            foreach (string part in SymbolNameParts)
-            {
-                if (name.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0)
-                {
-                    return true;
-                }
-            }
-            return false;
-        }
-
-        private static string GetLocalizedName(FontFamily family)
+        /// <summary>按名称创建字体，失败时回到界面字体。</summary>
+        public static Font CreateFont(string family, float size, FontStyle style, Font fallback)
         {
             try
             {
-                string name = family.GetName(0x0804);
-                if (!string.IsNullOrEmpty(name))
+                return new Font(family, size, style, GraphicsUnit.Point);
+            }
+            catch
+            {
+                try
                 {
-                    return name;
+                    return new Font(fallback.FontFamily, size, style, GraphicsUnit.Point);
                 }
-            }
-            catch
-            {
-                // Some fonts do not expose a localized family name.
-            }
-
-            try
-            {
-                return family.GetName(CultureInfo.CurrentUICulture.LCID);
-            }
-            catch
-            {
-                return null;
+                catch
+                {
+                    return (Font)fallback.Clone();
+                }
             }
         }
 
-        public static bool Exists(string familyName)
+        public static float PointSizeForHeight(int height)
         {
-            if (string.IsNullOrEmpty(familyName))
+            int magnitude = Math.Abs(height);
+            if (magnitude == 0)
             {
-                return false;
+                return 9f;
             }
-
-            try
+            float points = magnitude * 72f / 96f;
+            if (points < 5f)
             {
-                using (FontFamily family = new FontFamily(familyName))
-                {
-                    return family.IsStyleAvailable(FontStyle.Regular);
-                }
+                points = 5f;
             }
-            catch
+            if (points > 48f)
             {
-                return false;
+                points = 48f;
             }
+            return points;
         }
     }
 }

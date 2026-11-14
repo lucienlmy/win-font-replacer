@@ -1,922 +1,1012 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
-using System.IO;
-using System.Threading;
+using System.Drawing.Text;
 using System.Windows.Forms;
 
-namespace WinFontReplacer
+namespace FontSwap
 {
+    internal enum HotSpot
+    {
+        None,
+        Close,
+        Apply,
+        Restore,
+        Restart,
+        Toggle
+    }
+
     internal sealed class MainForm : Form
     {
-        private readonly SidebarPanel _sidebar;
-        private readonly SearchBox _search;
-        private readonly ListBox _fontList;
-        private readonly PreviewPanel _preview;
-        private readonly Label _selectedName;
-        private readonly Label _fileInfo;
-        private readonly CheckBox _metricsCheck;
-        private readonly CheckBox _fontLinkCheck;
-        private readonly AccentButton _applyButton;
-        private readonly AccentButton _restoreButton;
-        private readonly Label _statusLabel;
-        private readonly AdminBadge _adminBadge;
-        private readonly ToolTip _toolTip;
+        private const int DesignWidth = 600;
+        private const int DesignHeight = 584;
 
-        private List<FontListItem> _allFonts;
-        private List<FontListItem> _visibleFonts;
-        private string _selectedFamily;
-        private int _hoverIndex;
-        private bool _busy;
+        private static readonly Rectangle TitleBarRect = new Rectangle(0, 0, DesignWidth, 48);
+        private static readonly Rectangle CloseButtonRect = new Rectangle(548, 10, 28, 28);
+        private static readonly Rectangle StatusCardRect = new Rectangle(18, 52, 564, 80);
+        private static readonly Rectangle FontCardRect = new Rectangle(18, 140, 564, 216);
+        private static readonly Rectangle SearchFieldRect = new Rectangle(32, 172, 536, 28);
+        private static readonly Rectangle ListFrameRect = new Rectangle(32, 208, 536, 124);
+        private static readonly Rectangle PreviewCardRect = new Rectangle(18, 364, 564, 100);
+        private static readonly Rectangle PreviewBoxRect = new Rectangle(32, 392, 536, 56);
+        private static readonly Rectangle ToggleTrackRect = new Rectangle(32, 474, 36, 20);
+        private static readonly Rectangle ToggleHitRect = new Rectangle(18, 464, 340, 48);
+        private static readonly Rectangle ApplyButtonRect = new Rectangle(18, 512, 250, 36);
+        private static readonly Rectangle RestoreButtonRect = new Rectangle(280, 512, 132, 36);
+        private static readonly Rectangle RestartButtonRect = new Rectangle(424, 512, 158, 36);
+
+        private float _scale = 1f;
+
+        private TextBox _search;
+        private ListBox _fontList;
+
+        private List<string> _filtered = new List<string>();
+        private string _selectedFont = string.Empty;
+        private bool _suppressSelect;
+        private int _listHot = -1;
+
+        private bool _replaceIcon;
+        private bool _hasBackup;
+        private string _backupFont = string.Empty;
+        private string _currentFont = string.Empty;
+        private string _legacyNotice = string.Empty;
+        private int _menuHeight = -12;
+
+        private Font _fontTitle;
+        private Font _fontSubtitle;
+        private Font _fontSection;
+        private Font _fontLabel;
+        private Font _fontBody;
+        private Font _fontValue;
+        private Font _fontSmall;
+        private Font _fontTiny;
+        private Font _fontButton;
+        private Font _fontListFont;
+        private Font _fontBadge;
+        private Font _fontIcon;
+
+        private readonly Dictionary<string, Font> _sampleFonts = new Dictionary<string, Font>(StringComparer.OrdinalIgnoreCase);
+
+        private HotSpot _hot = HotSpot.None;
+        private HotSpot _pressed = HotSpot.None;
+
+        private string _toastText;
+        private bool _toastError;
+        private DateTime _toastUntil = DateTime.MinValue;
+        private Timer _toastTimer;
 
         public MainForm()
         {
             Text = "Windows 全局字体替换器";
-            ClientSize = new Size(1000, 620);
-            FormBorderStyle = FormBorderStyle.FixedSingle;
-            MaximizeBox = false;
-            StartPosition = FormStartPosition.Manual;
-            Location = new Point(16, 12);
-            BackColor = Theme.Background;
-            Font = Theme.Font(9f, FontStyle.Regular);
-            Icon = Program.AppIcon;
+            FormBorderStyle = FormBorderStyle.None;
+            StartPosition = FormStartPosition.CenterScreen;
+            BackColor = Theme.WindowBack;
             DoubleBuffered = true;
+            SetStyle(ControlStyles.OptimizedDoubleBuffer | ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint, true);
+            AutoScaleMode = AutoScaleMode.None;
             KeyPreview = true;
 
-            _toolTip = new ToolTip();
-            _toolTip.AutoPopDelay = 12000;
-            _toolTip.InitialDelay = 500;
-            _toolTip.ReshowDelay = 100;
-
-            _sidebar = new SidebarPanel();
-            _sidebar.Location = new Point(0, 0);
-            _sidebar.Size = new Size(250, 620);
-            _sidebar.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left;
-            Controls.Add(_sidebar);
-
-            Label title = MakeLabel(
-                "选择全局字体",
-                Theme.Font(17f, FontStyle.Bold),
-                Theme.Text,
-                new Point(274, 19),
-                new Size(440, 32));
-            Controls.Add(title);
-
-            Label subtitle = MakeLabel(
-                "刷新标题栏、菜单、对话框等传统窗口字体，随时一键恢复",
-                Theme.Font(8.7f, FontStyle.Regular),
-                Theme.Muted,
-                new Point(274, 52),
-                new Size(540, 22));
-            Controls.Add(subtitle);
-
-            _adminBadge = new AdminBadge();
-            _adminBadge.Location = new Point(872, 29);
-            _adminBadge.Size = new Size(104, 24);
-            _adminBadge.IsAdmin = Program.IsAdministrator();
-            _toolTip.SetToolTip(
-                _adminBadge,
-                _adminBadge.IsAdmin
-                    ? "当前以管理员权限运行，可直接应用和恢复。"
-                    : "浏览字体不需要管理员权限；点击应用或恢复时才会弹出 UAC。");
-            Controls.Add(_adminBadge);
-
-            CardPanel fontCard = new CardPanel();
-            fontCard.Location = new Point(274, 88);
-            fontCard.Size = new Size(398, 320);
-            Controls.Add(fontCard);
-
-            _search = new SearchBox();
-            _search.Location = new Point(12, 14);
-            _search.Size = new Size(374, 38);
-            _search.CueText = "搜索字体名称";
-            _search.Input.TextChanged += delegate { ApplyFilter(); };
-            fontCard.Controls.Add(_search);
-
-            _fontList = new ListBox();
-            _fontList.Location = new Point(10, 60);
-            _fontList.Size = new Size(378, 246);
-            _fontList.BorderStyle = BorderStyle.None;
-            _fontList.BackColor = Theme.Card;
-            _fontList.DrawMode = DrawMode.OwnerDrawFixed;
-            _fontList.ItemHeight = 46;
-            _fontList.IntegralHeight = false;
-            _fontList.ScrollAlwaysVisible = false;
-            _fontList.DrawItem += FontListDrawItem;
-            _fontList.SelectedIndexChanged += FontListSelectedIndexChanged;
-            _fontList.MouseMove += FontListMouseMove;
-            _fontList.MouseLeave += FontListMouseLeave;
-            fontCard.Controls.Add(_fontList);
-
-            CardPanel previewCard = new CardPanel();
-            previewCard.Location = new Point(688, 88);
-            previewCard.Size = new Size(288, 320);
-            Controls.Add(previewCard);
-
-            Label previewTitle = MakeLabel(
-                "实时预览",
-                Theme.Font(9f, FontStyle.Bold),
-                Theme.Text,
-                new Point(16, 14),
-                new Size(120, 20));
-            previewTitle.BackColor = Theme.Card;
-            previewCard.Controls.Add(previewTitle);
-
-            _preview = new PreviewPanel();
-            _preview.Location = new Point(16, 40);
-            _preview.Size = new Size(256, 206);
-            previewCard.Controls.Add(_preview);
-
-            _selectedName = MakeLabel(
-                "—",
-                Theme.Font(10.5f, FontStyle.Bold),
-                Theme.Text,
-                new Point(16, 254),
-                new Size(256, 24));
-            _selectedName.AutoEllipsis = true;
-            _selectedName.BackColor = Theme.Card;
-            previewCard.Controls.Add(_selectedName);
-
-            _fileInfo = MakeLabel(
-                "字体文件：—",
-                Theme.Font(7.7f, FontStyle.Regular),
-                Theme.MutedLight,
-                new Point(16, 279),
-                new Size(256, 20));
-            _fileInfo.AutoEllipsis = true;
-            _fileInfo.BackColor = Theme.Card;
-            previewCard.Controls.Add(_fileInfo);
-
-            CardPanel optionsCard = new CardPanel();
-            optionsCard.Location = new Point(274, 420);
-            optionsCard.Size = new Size(702, 92);
-            Controls.Add(optionsCard);
-
-            Label optionsTitle = MakeLabel(
-                "应用选项",
-                Theme.Font(9f, FontStyle.Bold),
-                Theme.Text,
-                new Point(16, 12),
-                new Size(100, 20));
-            optionsTitle.BackColor = Theme.Card;
-            optionsCard.Controls.Add(optionsTitle);
-
-            _metricsCheck = new CheckBox();
-            _metricsCheck.Text = "同时修改标题栏、菜单和对话框字体";
-            _metricsCheck.Checked = true;
-            _metricsCheck.Location = new Point(16, 36);
-            _metricsCheck.Size = new Size(330, 24);
-            _metricsCheck.Font = Theme.Font(8.7f, FontStyle.Regular);
-            _metricsCheck.ForeColor = Theme.TextSoft;
-            _metricsCheck.BackColor = Theme.Card;
-            _metricsCheck.FlatStyle = FlatStyle.Flat;
-            _toolTip.SetToolTip(
-                _metricsCheck,
-                "写入当前账户的 CaptionFont、MenuFont、MessageFont 等窗口字体设置。");
-            optionsCard.Controls.Add(_metricsCheck);
-
-            _fontLinkCheck = new CheckBox();
-            _fontLinkCheck.Text = "启用字体链接，自动补齐缺失字形（推荐）";
-            _fontLinkCheck.Checked = true;
-            _fontLinkCheck.Location = new Point(16, 60);
-            _fontLinkCheck.Size = new Size(390, 24);
-            _fontLinkCheck.Font = Theme.Font(8.7f, FontStyle.Regular);
-            _fontLinkCheck.ForeColor = Theme.TextSoft;
-            _fontLinkCheck.BackColor = Theme.Card;
-            _fontLinkCheck.FlatStyle = FlatStyle.Flat;
-            _toolTip.SetToolTip(
-                _fontLinkCheck,
-                "当某些程序请求 Segoe UI 等字体时，让 Windows 优先使用目标字体补齐缺字。");
-            optionsCard.Controls.Add(_fontLinkCheck);
-
-            Label optionsHint = MakeLabel(
-                "立即刷新传统窗口字体\n不替换系统字体文件",
-                Theme.Font(7.7f, FontStyle.Regular),
-                Theme.MutedLight,
-                new Point(464, 40),
-                new Size(218, 36));
-            optionsHint.TextAlign = ContentAlignment.MiddleRight;
-            optionsHint.BackColor = Theme.Card;
-            optionsCard.Controls.Add(optionsHint);
-
-            Panel divider = new Panel();
-            divider.Location = new Point(274, 528);
-            divider.Size = new Size(702, 1);
-            divider.BackColor = Theme.Border;
-            Controls.Add(divider);
-
-            _statusLabel = MakeLabel(
-                "正在检查字体备份…",
-                Theme.Font(7.9f, FontStyle.Regular),
-                Theme.Muted,
-                new Point(274, 540),
-                new Size(390, 24));
-            _statusLabel.TextAlign = ContentAlignment.MiddleLeft;
-            Controls.Add(_statusLabel);
-
-            _restoreButton = new AccentButton();
-            _restoreButton.Kind = ButtonKind.Secondary;
-            _restoreButton.Text = "一键恢复";
-            _restoreButton.Location = new Point(676, 532);
-            _restoreButton.Size = new Size(136, 42);
-            _restoreButton.Click += delegate { RestoreClicked(); };
-            _toolTip.SetToolTip(
-                _restoreButton,
-                "回到首次使用本工具前的字体设置。首次应用后自动生成备份。");
-            Controls.Add(_restoreButton);
-
-            _applyButton = new AccentButton();
-            _applyButton.Kind = ButtonKind.Primary;
-            _applyButton.Text = "应用全局字体";
-            _applyButton.Location = new Point(824, 532);
-            _applyButton.Size = new Size(152, 42);
-            _applyButton.Click += delegate { ApplyClicked(); };
-            _toolTip.SetToolTip(
-                _applyButton,
-                "通过字体映射和窗口字体设置生效，不修改系统字体文件。Windows 11 部分 DirectWrite 界面可能仍使用系统自带字体。");
-            Controls.Add(_applyButton);
-
-            Label footerNote = MakeLabel(
-                "标题栏/菜单会立即刷新；其他程序建议重启或注销。",
-                Theme.Font(7.6f, FontStyle.Regular),
-                Theme.MutedLight,
-                new Point(400, 585),
-                new Size(576, 20));
-            Controls.Add(footerNote);
-
-            LinkLabel backupLink = new LinkLabel();
-            backupLink.Text = "打开备份目录";
-            backupLink.Font = Theme.Font(7.9f, FontStyle.Regular);
-            backupLink.LinkColor = Theme.Accent;
-            backupLink.ActiveLinkColor = Theme.AccentPressed;
-            backupLink.BackColor = Theme.Background;
-            backupLink.Location = new Point(274, 583);
-            backupLink.Size = new Size(120, 20);
-            backupLink.LinkClicked += delegate { OpenBackupFolder(); };
-            Controls.Add(backupLink);
-
-            Shown += delegate
-            {
-                LoadFonts();
-                RefreshStatus();
-            };
-            FormClosing += MainFormClosing;
-        }
-
-        private void MainFormClosing(object sender, FormClosingEventArgs e)
-        {
-            if (_busy)
-            {
-                e.Cancel = true;
-            }
-        }
-
-        private static Label MakeLabel(string text, Font font, Color color, Point location, Size size)
-        {
-            Label label = new Label();
-            label.Text = text;
-            label.Font = font;
-            label.ForeColor = color;
-            label.BackColor = Theme.Background;
-            label.Location = location;
-            label.Size = size;
-            label.AutoSize = false;
-            label.UseCompatibleTextRendering = false;
-            return label;
-        }
-
-        private void LoadFonts()
-        {
-            Cursor previous = Cursor;
-            Cursor = Cursors.WaitCursor;
             try
             {
-                _allFonts = FontCatalog.Load();
-                ApplyFilter();
+                Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
             }
-            catch (Exception ex)
+            catch
             {
-                _allFonts = new List<FontListItem>();
-                _visibleFonts = new List<FontListItem>();
-                MessageDialog.ShowDialog(
-                    this,
-                    DialogKind.Error,
-                    "无法读取字体列表",
-                    "读取已安装字体失败。" + ex.Message,
-                    "知道了",
-                    null);
             }
-            finally
+
+            _replaceIcon = SettingsStore.IncludeIconFont;
+            _selectedFont = SettingsStore.LastFont;
+
+            InitializeFonts();
+            CreateControls();
+            TryImportLegacyBackup();
+            RefreshState();
+        }
+
+        private void InitializeFonts()
+        {
+            Font fallback = SystemFonts.MessageBoxFont;
+            _fontTitle = FontCatalog.CreateFont(Theme.UiFont, 12f, FontStyle.Bold, fallback);
+            _fontSubtitle = FontCatalog.CreateFont(Theme.UiFont, 8f, FontStyle.Regular, fallback);
+            _fontSection = FontCatalog.CreateFont(Theme.UiFont, 10f, FontStyle.Bold, fallback);
+            _fontLabel = FontCatalog.CreateFont(Theme.UiFont, 8f, FontStyle.Regular, fallback);
+            _fontBody = FontCatalog.CreateFont(Theme.UiFont, 9f, FontStyle.Regular, fallback);
+            _fontValue = FontCatalog.CreateFont(Theme.UiFont, 13.5f, FontStyle.Bold, fallback);
+            _fontSmall = FontCatalog.CreateFont(Theme.UiFont, 8f, FontStyle.Regular, fallback);
+            _fontTiny = FontCatalog.CreateFont(Theme.UiFont, 7.5f, FontStyle.Regular, fallback);
+            _fontButton = FontCatalog.CreateFont(Theme.UiFont, 9.5f, FontStyle.Regular, fallback);
+            _fontListFont = FontCatalog.CreateFont(Theme.UiFont, 9.5f, FontStyle.Regular, fallback);
+            _fontBadge = FontCatalog.CreateFont(Theme.UiFont, 7.5f, FontStyle.Regular, fallback);
+            _fontIcon = FontCatalog.CreateFont(Theme.UiFont, 9.5f, FontStyle.Bold, fallback);
+        }
+
+        private void CreateControls()
+        {
+            _search = new TextBox();
+            _search.BorderStyle = BorderStyle.None;
+            _search.Font = FontCatalog.CreateFont(Theme.UiFont, 10f, FontStyle.Regular, _fontBody);
+            _search.BackColor = Color.FromArgb(249, 250, 251);
+            _search.ForeColor = Theme.TextPrimary;
+            _search.AutoSize = false;
+            _search.TextChanged += delegate { ReloadFontList(_search.Text); };
+            _search.Enter += delegate { Invalidate(); };
+            _search.Leave += delegate { Invalidate(); };
+            _search.KeyDown += SearchKeyDown;
+            Controls.Add(_search);
+
+            _fontList = new ListBox();
+            _fontList.BorderStyle = BorderStyle.None;
+            _fontList.BackColor = Color.White;
+            _fontList.ForeColor = Theme.TextPrimary;
+            _fontList.DrawMode = DrawMode.OwnerDrawFixed;
+            _fontList.IntegralHeight = false;
+            _fontList.Font = _fontListFont;
+            _fontList.DrawItem += FontListItemDraw;
+            _fontList.SelectedIndexChanged += delegate
             {
-                Cursor = previous;
+                if (_suppressSelect)
+                {
+                    return;
+                }
+                string name = _fontList.SelectedItem as string;
+                if (!string.IsNullOrEmpty(name))
+                {
+                    _selectedFont = name;
+                    Invalidate();
+                }
+            };
+            _fontList.MouseMove += FontListMouseMove;
+            _fontList.MouseLeave += delegate
+            {
+                if (_listHot != -1)
+                {
+                    _listHot = -1;
+                    _fontList.Invalidate();
+                }
+            };
+            _fontList.DoubleClick += delegate { ApplySelectedFont(); };
+            _fontList.KeyDown += FontListKeyDown;
+            Controls.Add(_fontList);
+
+            _toastTimer = new Timer();
+            _toastTimer.Interval = 300;
+            _toastTimer.Tick += delegate
+            {
+                if (!string.IsNullOrEmpty(_toastText) && DateTime.UtcNow > _toastUntil)
+                {
+                    _toastText = null;
+                    Invalidate();
+                }
+            };
+            _toastTimer.Start();
+        }
+
+        protected override void OnLoad(EventArgs e)
+        {
+            base.OnLoad(e);
+            ComputeScale();
+            ApplyLayout();
+            ReloadFontList(string.Empty);
+            if (string.IsNullOrEmpty(_selectedFont))
+            {
+                _selectedFont = _currentFont;
+            }
+            ReloadFontList(_search.Text);
+            if (!string.IsNullOrEmpty(_legacyNotice))
+            {
+                ShowToast(_legacyNotice, false);
+                _legacyNotice = string.Empty;
+            }
+            Invalidate();
+        }
+
+        /// <summary>升级用户：旧版 1.x 的数据目录里如果有一份基线，接管它作为回退备份。</summary>
+        private void TryImportLegacyBackup()
+        {
+            try
+            {
+                string message;
+                if (LegacyImporter.TryImport(out message))
+                {
+                    _legacyNotice = message;
+                }
+            }
+            catch
+            {
             }
         }
 
-        private void ApplyFilter()
+        private void ComputeScale()
         {
-            string query = _search == null ? string.Empty : _search.Input.Text.Trim();
-            List<FontListItem> filtered = new List<FontListItem>();
-            if (_allFonts != null)
+            _scale = 1f;
+            try
             {
-                foreach (FontListItem item in _allFonts)
+                using (Graphics graphics = CreateGraphics())
                 {
-                    if (query.Length == 0 ||
-                        item.DisplayName.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0 ||
-                        item.FamilyName.IndexOf(query, StringComparison.CurrentCultureIgnoreCase) >= 0)
+                    if (graphics.DpiX > 0f)
                     {
-                        filtered.Add(item);
+                        _scale = graphics.DpiX / 96f;
                     }
                 }
             }
-
-            _visibleFonts = filtered;
-            _fontList.BeginUpdate();
-            try
+            catch
             {
-                _fontList.Items.Clear();
-                foreach (FontListItem item in filtered)
-                {
-                    _fontList.Items.Add(item);
-                }
-            }
-            finally
-            {
-                _fontList.EndUpdate();
+                _scale = 1f;
             }
 
-            if (filtered.Count == 0)
+            if (_scale < 0.75f || _scale > 4f)
             {
-                _selectedFamily = null;
-                _preview.FamilyName = null;
-                _selectedName.Text = "没有匹配的字体";
-                _fileInfo.Text = "字体文件：—";
-                _applyButton.Enabled = false;
+                _scale = 1f;
+            }
+
+            Rectangle area = Screen.PrimaryScreen.WorkingArea;
+            float verticalLimit = (float)(area.Height - 16) / DesignHeight;
+            if (verticalLimit > 0.6f && _scale > verticalLimit)
+            {
+                _scale = verticalLimit;
+            }
+        }
+
+        private void ApplyLayout()
+        {
+            int width = S(DesignWidth);
+            int height = S(DesignHeight);
+            ClientSize = new Size(width, height);
+
+            _search.Bounds = S(new Rectangle(56, 175, 504, 22));
+            _fontList.ItemHeight = S(30);
+            _fontList.Bounds = S(new Rectangle(34, 210, 532, 120));
+            UpdateRegion();
+            CenterOnScreen();
+        }
+
+        private void CenterOnScreen()
+        {
+            Rectangle area = Screen.PrimaryScreen.WorkingArea;
+            int x = area.X + (area.Width - Width) / 2;
+            int y = area.Y + (area.Height - Height) / 2;
+            if (x < area.X)
+            {
+                x = area.X;
+            }
+            if (y < area.Y)
+            {
+                y = area.Y;
+            }
+            Location = new Point(x, y);
+        }
+
+        private void UpdateRegion()
+        {
+            if (Width <= 0 || Height <= 0)
+            {
                 return;
             }
 
-            _applyButton.Enabled = !_busy;
-            string wanted = _selectedFamily;
-            int index = 0;
-            if (!string.IsNullOrEmpty(wanted))
+            using (GraphicsPath path = Theme.RoundedRect(new Rectangle(0, 0, Width, Height), S(14)))
             {
-                for (int i = 0; i < filtered.Count; i++)
+                Region = new Region(path);
+            }
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (_search != null)
+            {
+                UpdateRegion();
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+            using (SolidBrush back = new SolidBrush(Theme.WindowBack))
+            {
+                g.FillRectangle(back, ClientRectangle);
+            }
+
+            PaintTitleBar(g);
+            PaintStatusCard(g);
+            PaintFontCard(g);
+            PaintPreviewCard(g);
+            PaintOptions(g);
+            PaintButtons(g);
+            PaintFooter(g);
+            PaintToast(g);
+        }
+
+        private void PaintTitleBar(Graphics g)
+        {
+            using (Pen pen = new Pen(Theme.Divider, 1f))
+            {
+                g.DrawLine(pen, 0, S(48), Width, S(48));
+            }
+
+            Rectangle icon = S(new Rectangle(18, 10, 28, 28));
+            using (GraphicsPath path = Theme.RoundedRect(icon, S(8)))
+            using (LinearGradientBrush brush = new LinearGradientBrush(
+                icon,
+                Color.FromArgb(96, 165, 250),
+                Color.FromArgb(37, 99, 235),
+                LinearGradientMode.ForwardDiagonal))
+            {
+                g.FillPath(brush, path);
+            }
+            DrawCentered(g, "Aa", _fontIcon, Color.White, icon);
+
+            Draw(g, "Windows 全局字体替换器", _fontTitle, Theme.TextPrimary, P(54, 9));
+            Draw(g, "系统界面字体替换", _fontSubtitle, Theme.TextMuted, P(54, 27));
+
+            Rectangle close = S(CloseButtonRect);
+            if (_hot == HotSpot.Close)
+            {
+                Theme.FillRounded(g, close, S(7), Color.FromArgb(233, 235, 239));
+            }
+            PaintCloseGlyph(g, close);
+        }
+
+        private void PaintCloseGlyph(Graphics g, Rectangle rect)
+        {
+            int pad = Math.Max(7, rect.Width / 3);
+            Color color = _hot == HotSpot.Close ? Theme.TextPrimary : Theme.TextSecondary;
+            using (Pen pen = new Pen(color, 1.4f))
+            {
+                g.DrawLine(pen, rect.Left + pad, rect.Top + pad, rect.Right - pad, rect.Bottom - pad);
+                g.DrawLine(pen, rect.Right - pad, rect.Top + pad, rect.Left + pad, rect.Bottom - pad);
+            }
+        }
+
+        private void PaintStatusCard(Graphics g)
+        {
+            Theme.DrawCard(g, S(StatusCardRect), S(10), Theme.CardBack, Theme.CardBorder);
+
+            Draw(g, "当前界面字体", _fontLabel, Theme.TextSecondary, P(32, 64));
+
+            string current = string.IsNullOrEmpty(_currentFont) ? "（无法读取）" : _currentFont;
+            DrawRect(g, current, _fontValue, Theme.TextPrimary, R(32, 78, 330, 22),
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+
+            Rectangle badge = R(462, 64, 104, 20);
+            Theme.FillRounded(g, badge, S(10), Theme.SuccessSoft);
+            DrawCentered(g, "字号未改动", _fontBadge, Theme.Success, badge);
+
+            DrawRight(g, "跟随系统 DPI 与缩放", _fontTiny, Theme.TextMuted, R(380, 88, 186, 14));
+
+            bool applied = _hasBackup;
+            Rectangle dot = R(32, 106, 6, 6);
+            using (SolidBrush brush = new SolidBrush(applied ? Theme.Success : Theme.TextMuted))
+            {
+                g.FillEllipse(brush, dot);
+            }
+
+            string status;
+            if (applied)
+            {
+                status = "已应用替换，可一键回退";
+                if (!string.IsNullOrEmpty(_backupFont))
                 {
-                    if (string.Equals(filtered[i].FamilyName, wanted, StringComparison.OrdinalIgnoreCase))
-                    {
-                        index = i;
-                        break;
-                    }
+                    status += " · 原始字体：" + _backupFont;
                 }
             }
             else
             {
-                index = PreferredInitialIndex(filtered);
+                status = "尚未替换字体，当前为系统原始设置";
             }
 
-            _fontList.SelectedIndex = index;
-            FontListSelectedIndexChanged(null, EventArgs.Empty);
+            DrawRect(g, status, _fontSmall, applied ? Theme.TextSecondary : Theme.TextMuted, R(44, 102, 500, 14),
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
         }
 
-        private int PreferredInitialIndex(List<FontListItem> fonts)
+        private void PaintFontCard(Graphics g)
         {
-            string applied = BackupStore.CurrentSubstitution();
-            if (!string.IsNullOrEmpty(applied))
+            Theme.DrawCard(g, S(FontCardRect), S(10), Theme.CardBack, Theme.CardBorder);
+
+            Draw(g, "选择字体", _fontSection, Theme.TextPrimary, P(32, 150));
+            DrawRight(g, "共 " + _filtered.Count + " 款", _fontSmall, Theme.TextMuted, R(420, 151, 146, 14));
+
+            Rectangle field = S(SearchFieldRect);
+            Theme.FillRounded(g, field, S(8), Color.FromArgb(249, 250, 251));
+            Theme.StrokeRounded(g, field, S(8), _search.Focused ? Theme.Accent : Theme.CardBorder, 1f);
+
+            PaintSearchIcon(g, P(46, 185));
+
+            Rectangle frame = S(ListFrameRect);
+            Theme.FillRounded(g, frame, S(8), Color.White);
+            Theme.StrokeRounded(g, frame, S(8), Theme.CardBorder, 1f);
+
+            if (_filtered.Count == 0)
             {
-                for (int i = 0; i < fonts.Count; i++)
-                {
-                    if (string.Equals(fonts[i].FamilyName, applied, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return i;
-                    }
-                }
+                DrawCentered(g, "没有找到匹配的字体", _fontBody, Theme.TextMuted, frame);
+            }
+            else if (_fontList.SelectedIndex < 0 && !string.IsNullOrEmpty(_search.Text))
+            {
+                DrawRight(g, "按 Enter 应用", _fontTiny, Theme.TextMuted, R(360, 338, 206, 12));
             }
 
-            string[] preferred = new string[] { "Microsoft YaHei UI", "Microsoft YaHei", "Segoe UI" };
-            foreach (string name in preferred)
-            {
-                for (int i = 0; i < fonts.Count; i++)
-                {
-                    if (string.Equals(fonts[i].FamilyName, name, StringComparison.OrdinalIgnoreCase))
-                    {
-                        return i;
-                    }
-                }
-            }
-            return 0;
+            Draw(g, "只替换字形，字号与图标大小保持不变。", _fontTiny, Theme.TextMuted, P(32, 340));
         }
 
-        private void FontListSelectedIndexChanged(object sender, EventArgs e)
+        private void PaintSearchIcon(Graphics g, Point center)
         {
-            FontListItem item = _fontList.SelectedItem as FontListItem;
-            if (item == null)
+            Color color = _search.Focused ? Theme.Accent : Theme.TextMuted;
+            using (Pen pen = new Pen(color, 1.3f))
+            {
+                g.DrawEllipse(pen, center.X - 4, center.Y - 4, 8, 8);
+                g.DrawLine(pen, center.X + 2.6f, center.Y + 2.6f, center.X + 6.4f, center.Y + 6.4f);
+            }
+        }
+
+        private void PaintPreviewCard(Graphics g)
+        {
+            Theme.DrawCard(g, S(PreviewCardRect), S(10), Theme.CardBack, Theme.CardBorder);
+
+            Draw(g, "预览", _fontSection, Theme.TextPrimary, P(32, 374));
+
+            float size = FontCatalog.PointSizeForHeight(_menuHeight);
+            DrawRight(g, "菜单字号 " + size.ToString("0.#") + " pt · 未改动", _fontTiny, Theme.TextMuted, R(330, 375, 236, 14));
+
+            Rectangle box = S(PreviewBoxRect);
+            Theme.FillRounded(g, box, S(8), Color.FromArgb(250, 250, 251));
+
+            string family = _selectedFont;
+            if (string.IsNullOrEmpty(family))
+            {
+                family = _currentFont;
+            }
+            if (string.IsNullOrEmpty(family))
+            {
+                family = Theme.UiFont;
+            }
+
+            using (Font menuFont = FontCatalog.CreateFont(family, size, FontStyle.Regular, _fontBody))
+            using (Font bodyFont = FontCatalog.CreateFont(family, 9f, FontStyle.Regular, _fontBody))
+            {
+                DrawRect(g, "文件(F)    编辑(E)    查看(V)    帮助(H)", menuFont, Theme.TextPrimary, R(44, 396, 512, 22),
+                    TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+                DrawRect(g, "字体替换只改变字形，不改变字号与图标大小。", bodyFont, Theme.TextSecondary, R(44, 422, 512, 18),
+                    TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+            }
+        }
+
+        private void PaintOptions(Graphics g)
+        {
+            Rectangle track = S(ToggleTrackRect);
+            Color trackColor = _replaceIcon ? Theme.Accent : Color.FromArgb(203, 213, 225);
+            Theme.FillRounded(g, track, track.Height / 2, trackColor);
+
+            int knobSize = track.Height - S(4);
+            Rectangle knob = _replaceIcon
+                ? new Rectangle(track.Right - knobSize - S(2), track.Top + S(2), knobSize, knobSize)
+                : new Rectangle(track.Left + S(2), track.Top + S(2), knobSize, knobSize);
+            using (SolidBrush brush = new SolidBrush(Color.White))
+            {
+                g.FillEllipse(brush, knob);
+            }
+
+            Color labelColor = _hot == HotSpot.Toggle ? Theme.Accent : Theme.TextPrimary;
+            Draw(g, "同时替换桌面图标文字", _fontBody, labelColor, P(78, 470));
+            Draw(g, "只改字体名，不影响图标大小与间距", _fontTiny, Theme.TextMuted, P(78, 489));
+        }
+
+        private void PaintButtons(Graphics g)
+        {
+            PaintButton(g, ApplyButtonRect, "应用字体", true, true, HotSpot.Apply);
+            PaintButton(g, RestoreButtonRect, "一键回退", false, _hasBackup, HotSpot.Restore);
+            PaintButton(g, RestartButtonRect, "重启资源管理器", false, true, HotSpot.Restart);
+        }
+
+        private void PaintButton(Graphics g, Rectangle designRect, string text, bool primary, bool enabled, HotSpot spot)
+        {
+            Rectangle rect = S(designRect);
+            bool hot = enabled && _hot == spot;
+            bool down = hot && _pressed == spot;
+
+            if (!enabled)
+            {
+                Theme.FillRounded(g, rect, S(9), Color.FromArgb(246, 247, 249));
+                Theme.StrokeRounded(g, rect, S(9), Theme.CardBorder, 1f);
+                DrawCentered(g, text, _fontButton, Color.FromArgb(183, 187, 194), rect);
+                return;
+            }
+
+            if (primary)
+            {
+                Color color = down ? Theme.AccentDown : (hot ? Theme.AccentHover : Theme.Accent);
+                Theme.FillRounded(g, rect, S(9), color);
+                DrawCentered(g, text, _fontButton, Color.White, rect);
+            }
+            else
+            {
+                Color color = hot ? Theme.NeutralButtonHover : Theme.NeutralButton;
+                Theme.FillRounded(g, rect, S(9), color);
+                Theme.StrokeRounded(g, rect, S(9), Theme.NeutralButtonBorder, 1f);
+                DrawCentered(g, text, _fontButton, Theme.TextPrimary, rect);
+            }
+        }
+
+        private void PaintFooter(Graphics g)
+        {
+            DrawCentered(g, "应用后部分窗口未刷新时可重启资源管理器；随时可一键回退。",
+                _fontTiny, Theme.TextMuted, R(18, 554, 564, 14));
+        }
+
+        private void PaintToast(Graphics g)
+        {
+            if (string.IsNullOrEmpty(_toastText) || DateTime.UtcNow > _toastUntil)
             {
                 return;
             }
 
-            _selectedFamily = item.FamilyName;
-            _preview.FamilyName = item.FamilyName;
-            _selectedName.Text = item.DisplayName;
-            _fileInfo.Text = "字体文件：正在读取…";
-
-            string family = item.FamilyName;
-            ThreadPool.QueueUserWorkItem(delegate
-            {
-                FontFileInfo info = null;
-                try
-                {
-                    info = FontFileIndex.Find(family);
-                }
-                catch
-                {
-                }
-
-                try
-                {
-                    if (IsDisposed)
-                    {
-                        return;
-                    }
-                    BeginInvoke((MethodInvoker)delegate
-                    {
-                        if (string.Equals(_selectedFamily, family, StringComparison.OrdinalIgnoreCase))
-                        {
-                            _fileInfo.Text = info == null
-                                ? "字体文件：注册表未记录"
-                                : "字体文件：" + info.FileName;
-                        }
-                    });
-                }
-                catch
-                {
-                }
-            });
+            Rectangle toast = R(32, 548, 536, 30);
+            Color back = _toastError ? Theme.ToastErrorBack : Theme.ToastBack;
+            Theme.FillRounded(g, toast, S(9), Color.FromArgb(240, back));
+            DrawCentered(g, _toastText, _fontSmall, Color.White, toast);
         }
 
-        private void FontListDrawItem(object sender, DrawItemEventArgs e)
+        private void FontListItemDraw(object sender, DrawItemEventArgs e)
         {
             if (e.Index < 0 || e.Index >= _fontList.Items.Count)
             {
                 return;
             }
 
-            FontListItem item = _fontList.Items[e.Index] as FontListItem;
-            if (item == null)
-            {
-                return;
-            }
+            string name = _fontList.Items[e.Index] as string;
+            Rectangle row = e.Bounds;
+            Graphics g = e.Graphics;
+            g.SmoothingMode = SmoothingMode.AntiAlias;
 
-            bool selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
-            bool hover = e.Index == _hoverIndex;
-            Color background = selected
-                ? Theme.AccentSoft
-                : (hover ? Color.FromArgb(248, 250, 252) : Theme.Card);
-
-            using (SolidBrush fill = new SolidBrush(background))
-            {
-                e.Graphics.FillRectangle(fill, e.Bounds);
-            }
+            bool selected = (e.State & DrawItemState.Selected) != 0;
+            Rectangle fill = new Rectangle(row.Left + S(4), row.Top + S(2), row.Width - S(8), row.Height - S(4));
 
             if (selected)
             {
-                using (SolidBrush accent = new SolidBrush(Theme.Accent))
-                {
-                    e.Graphics.FillRectangle(accent, e.Bounds.X, e.Bounds.Y + 8, 3, e.Bounds.Height - 16);
-                }
+                Theme.FillRounded(g, fill, S(7), Theme.AccentSoft);
+                Theme.StrokeRounded(g, fill, S(7), Theme.AccentSoftBorder, 1f);
             }
-
-            Font previewFont = null;
-            bool disposeFont = false;
-            try
+            else if (_listHot == e.Index)
             {
-                previewFont = new Font(item.FamilyName, 11f, FontStyle.Regular);
-                disposeFont = true;
+                Theme.FillRounded(g, fill, S(7), Color.FromArgb(246, 247, 249));
             }
-            catch
+
+            Color nameColor = selected ? Theme.Accent : Theme.TextPrimary;
+            Rectangle nameRect = new Rectangle(row.Left + S(12), row.Top + S(6), S(146), S(20));
+            TextRenderer.DrawText(g, name, _fontListFont, nameRect, nameColor,
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+
+            Font sample = GetSampleFont(name);
+            Rectangle sampleRect = new Rectangle(row.Left + S(164), row.Top + S(6), row.Width - S(176), S(20));
+            TextRenderer.DrawText(g, "Aa 字体预览 123", sample, sampleRect,
+                selected ? Theme.Accent : Theme.TextMuted,
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+        }
+
+        private Font GetSampleFont(string family)
+        {
+            Font cached;
+            if (_sampleFonts.TryGetValue(family, out cached))
             {
-                previewFont = Theme.Font(9f, FontStyle.Regular);
+                return cached;
             }
 
-            Rectangle textBounds = new Rectangle(
-                e.Bounds.X + 16,
-                e.Bounds.Y + 5,
-                e.Bounds.Width - 62,
-                24);
-            TextRenderer.DrawText(
-                e.Graphics,
-                item.DisplayName,
-                previewFont,
-                textBounds,
-                selected ? Theme.AccentPressed : Theme.Text,
-                TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-
-            TextRenderer.DrawText(
-                e.Graphics,
-                item.Subtitle,
-                Theme.Font(7.4f, FontStyle.Regular),
-                new Rectangle(e.Bounds.X + 16, e.Bounds.Y + 27, e.Bounds.Width - 62, 16),
-                Theme.MutedLight,
-                TextFormatFlags.NoPrefix | TextFormatFlags.EndEllipsis | TextFormatFlags.SingleLine);
-
-            if (selected)
-            {
-                int x = e.Bounds.Right - 30;
-                int y = e.Bounds.Y + 16;
-                using (SolidBrush circle = new SolidBrush(Theme.Accent))
-                {
-                    e.Graphics.FillEllipse(circle, x, y, 14, 14);
-                }
-                using (Pen check = new Pen(Color.White, 1.8f))
-                {
-                    check.StartCap = LineCap.Round;
-                    check.EndCap = LineCap.Round;
-                    e.Graphics.DrawLines(check, new PointF[]
-                    {
-                        new PointF(x + 3.5f, y + 7f),
-                        new PointF(x + 6f, y + 9.5f),
-                        new PointF(x + 10.5f, y + 4.5f)
-                    });
-                }
-            }
-
-            if (disposeFont && previewFont != null)
-            {
-                previewFont.Dispose();
-            }
+            Font created = FontCatalog.CreateFont(family, 9f, FontStyle.Regular, _fontListFont);
+            _sampleFonts[family] = created;
+            return created;
         }
 
         private void FontListMouseMove(object sender, MouseEventArgs e)
         {
             int index = _fontList.IndexFromPoint(e.Location);
-            if (index != _hoverIndex)
+            if (index != _listHot)
             {
-                _hoverIndex = index;
+                _listHot = index;
                 _fontList.Invalidate();
             }
         }
 
-        private void FontListMouseLeave(object sender, EventArgs e)
+        private void SearchKeyDown(object sender, KeyEventArgs e)
         {
-            _hoverIndex = -1;
-            _fontList.Invalidate();
+            if (e.KeyCode == Keys.Down && _fontList.Items.Count > 0)
+            {
+                _fontList.Focus();
+                if (_fontList.SelectedIndex < 0)
+                {
+                    _fontList.SelectedIndex = 0;
+                }
+                e.Handled = true;
+            }
+            else if (e.KeyCode == Keys.Enter)
+            {
+                ApplySelectedFont();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
+            }
         }
 
-        private void ApplyClicked()
+        private void FontListKeyDown(object sender, KeyEventArgs e)
         {
-            if (_busy || string.IsNullOrEmpty(_selectedFamily))
+            if (e.KeyCode == Keys.Enter)
             {
-                return;
+                ApplySelectedFont();
+                e.Handled = true;
+                e.SuppressKeyPress = true;
             }
+        }
 
-            string message =
-                "将把 Windows 界面字体替换为：\n“" + _selectedFamily + "”\n\n" +
-                "会修改字体映射和当前账户的窗口字体。\n" +
-                "首次应用自动备份，之后可随时一键恢复。\n\n" +
-                "应用后建议注销并重新登录。";
-
-            bool confirmed = MessageDialog.ShowDialog(
-                this,
-                DialogKind.Warning,
-                "应用全局字体",
-                message,
-                "应用字体",
-                "取消");
-            if (!confirmed)
-            {
-                return;
-            }
-
-            OperationRequest request = new OperationRequest();
-            request.Operation = "Apply";
-            request.FontFamily = _selectedFamily;
-            request.ModifyWindowMetrics = _metricsCheck.Checked;
-            request.EnableFontLink = _fontLinkCheck.Checked;
-
-            SetBusy(true, "正在应用字体，请在 UAC 窗口中确认…");
-            OperationResult result = null;
+        private void ReloadFontList(string query)
+        {
+            _suppressSelect = true;
             try
             {
-                result = ElevationService.Execute(request);
+                _filtered = FontCatalog.Filter(query);
+
+                _fontList.BeginUpdate();
+                _fontList.Items.Clear();
+                for (int i = 0; i < _filtered.Count; i++)
+                {
+                    _fontList.Items.Add(_filtered[i]);
+                }
+                _fontList.EndUpdate();
+
+                _fontList.Visible = _filtered.Count > 0;
+
+                int index = FindFontIndex(_filtered, _selectedFont);
+                if (index < 0)
+                {
+                    index = FindFontIndex(_filtered, _currentFont);
+                }
+                if (index < 0 && _filtered.Count > 0)
+                {
+                    index = 0;
+                    _selectedFont = _filtered[0];
+                }
+                if (index >= 0)
+                {
+                    _fontList.SelectedIndex = index;
+                    if (index > 1)
+                    {
+                        _fontList.TopIndex = index - 1;
+                    }
+                }
+                else
+                {
+                    _fontList.ClearSelected();
+                }
             }
             finally
             {
-                SetBusy(false, null);
+                _suppressSelect = false;
             }
 
-            HandleOperationResult(result, true);
+            Invalidate();
         }
 
-        private void RestoreClicked()
+        private static int FindFontIndex(List<string> list, string name)
         {
-            if (_busy)
+            if (string.IsNullOrEmpty(name))
             {
-                return;
+                return -1;
             }
-
-            if (!BackupStore.HasBaseline)
+            for (int i = 0; i < list.Count; i++)
             {
-                MessageDialog.ShowDialog(
-                    this,
-                    DialogKind.Info,
-                    "还没有可恢复的备份",
-                    "首次应用字体会自动保存系统原始字体设置，之后才能使用一键恢复。",
-                    "知道了",
-                    null);
-                return;
+                if (string.Equals(list[i], name, StringComparison.OrdinalIgnoreCase))
+                {
+                    return i;
+                }
             }
+            return -1;
+        }
 
-            bool confirmed = MessageDialog.ShowDialog(
-                this,
-                DialogKind.Warning,
-                "一键恢复原始字体",
-                "将把字体映射、窗口字体和字体链接恢复到首次使用本工具前的状态。\n\n" +
-                "此操作不会删除或修改任何字体文件。恢复后建议注销并重新登录。",
-                "恢复原始字体",
-                "取消");
-            if (!confirmed)
-            {
-                return;
-            }
-
-            OperationRequest request = new OperationRequest();
-            request.Operation = "Restore";
-
-            SetBusy(true, "正在恢复原始字体，请在 UAC 窗口中确认…");
-            OperationResult result = null;
+        private void RefreshState()
+        {
             try
             {
-                result = ElevationService.Execute(request);
+                _currentFont = MetricReader.CurrentInterfaceFont();
             }
-            finally
+            catch
             {
-                SetBusy(false, null);
-            }
-
-            HandleOperationResult(result, false);
-        }
-
-        private void HandleOperationResult(OperationResult result, bool applied)
-        {
-            RefreshStatus();
-
-            if (result == null)
-            {
-                MessageDialog.ShowDialog(
-                    this,
-                    DialogKind.Error,
-                    "操作没有返回结果",
-                    "操作进程没有返回结果，请检查系统日志或重试。",
-                    "知道了",
-                    null);
-                return;
+                _currentFont = string.Empty;
             }
 
-            if (result.Canceled)
+            try
             {
-                _statusLabel.Text = "已取消管理员授权，未做任何修改。";
-                return;
+                _menuHeight = MetricReader.MenuFontHeight();
+            }
+            catch
+            {
+                _menuHeight = -12;
             }
 
-            if (!result.Success)
+            try
             {
-                string message = result.Message;
-                if (string.IsNullOrEmpty(message))
-                {
-                    message = "操作失败。";
-                }
-                if (!string.IsNullOrEmpty(result.LogPath))
-                {
-                    message += "\n\n日志：" + result.LogPath;
-                }
-
-                MessageDialog.ShowDialog(
-                    this,
-                    DialogKind.Error,
-                    applied ? "应用失败" : "恢复失败",
-                    message,
-                    "知道了",
-                    null);
-                return;
+                _hasBackup = FontOperations.HasBackup();
+                _backupFont = _hasBackup ? FontOperations.OriginalFont() : string.Empty;
             }
-
-            string successMessage = applied
-                ? "已把传统窗口字体切换为：\n“" + result.TargetFont + "”\n\n" +
-                  "标题栏、菜单、对话框等已刷新。部分程序需要重启，注销后重新登录可让所有程序生效。"
-                : "字体映射和窗口字体已恢复到首次使用本工具前的状态。\n\n" +
-                  "传统窗口字体已刷新。部分程序需要重启，注销后重新登录可让所有程序恢复。";
-
-            bool restart = MessageDialog.ShowDialog(
-                this,
-                DialogKind.Success,
-                applied ? "字体应用成功" : "恢复完成",
-                successMessage,
-                "重启资源管理器",
-                "稍后");
-            if (restart)
+            catch
             {
-                RestartExplorer();
+                _hasBackup = false;
+                _backupFont = string.Empty;
             }
         }
 
-        private void RefreshStatus()
+        private void ApplySelectedFont()
         {
-            bool hasBaseline = BackupStore.HasBaseline;
-            string applied = BackupStore.CurrentSubstitution();
-            bool isApplied = !string.IsNullOrEmpty(applied) &&
-                !string.Equals(applied, "Segoe UI", StringComparison.OrdinalIgnoreCase);
-
-            StateInfo state = BackupStore.LoadState();
-            if (!isApplied && state != null &&
-                string.Equals(state.LastAction, "Applied", StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(state.TargetFont, "Segoe UI", StringComparison.OrdinalIgnoreCase))
+            string face = _selectedFont;
+            if (string.IsNullOrEmpty(face))
             {
-                applied = state.TargetFont;
-                isApplied = true;
+                ShowToast("请先在列表中选择一个字体。", true);
+                return;
             }
 
-            _sidebar.IsAdmin = Program.IsAdministrator();
-            _sidebar.HasBaseline = hasBaseline;
-            _sidebar.IsApplied = isApplied;
-            _sidebar.AppliedFont = applied;
-
-            if (hasBaseline)
+            try
             {
-                _statusLabel.Text = isApplied
-                    ? "已应用：" + applied + " · 原始字体备份已就绪"
-                    : "原始字体备份已就绪 · 可随时一键恢复";
+                ApplyResult result = FontOperations.Apply(face, _replaceIcon);
+                SettingsStore.LastFont = face;
+                SettingsStore.IncludeIconFont = _replaceIcon;
+                RefreshState();
+                Invalidate();
+                ShowToast("已应用「" + result.FontFamily + "」，字号保持不变。", false);
             }
-            else
+            catch (Exception ex)
             {
-                _statusLabel.Text = "首次应用会自动创建系统原始字体备份";
+                RefreshState();
+                Invalidate();
+                ShowToast(ex.Message, true);
             }
-
-            _restoreButton.Enabled = hasBaseline && !_busy;
-            _applyButton.Enabled = !_busy && _visibleFonts != null && _visibleFonts.Count > 0;
         }
 
-        private void SetBusy(bool busy, string status)
+        private void RestoreFonts()
         {
-            _busy = busy;
-            _applyButton.Enabled = !busy && _visibleFonts != null && _visibleFonts.Count > 0;
-            _restoreButton.Enabled = !busy && BackupStore.HasBaseline;
-            _fontList.Enabled = !busy;
-            _search.Enabled = !busy;
-            _metricsCheck.Enabled = !busy;
-            _fontLinkCheck.Enabled = !busy;
-            UseWaitCursor = busy;
-
-            if (!string.IsNullOrEmpty(status))
+            if (!Confirm("确定要恢复到替换前的原始字体吗？\n\n六项界面字体将写回原始值，字号不受影响。"))
             {
-                _statusLabel.Text = status;
+                return;
             }
 
-            if (busy)
+            try
             {
-                _applyButton.Text = "正在处理…";
+                ApplyResult result = FontOperations.Restore();
+                RefreshState();
+                Invalidate();
+                ShowToast("已恢复原始字体设置。", false);
+                OperationLog.Write("用户回退字体，此前的目标字体为：" + result.FontFamily);
             }
-            else
+            catch (Exception ex)
             {
-                _applyButton.Text = "应用全局字体";
+                RefreshState();
+                Invalidate();
+                ShowToast(ex.Message, true);
             }
-
-            Application.DoEvents();
         }
 
         private void RestartExplorer()
         {
-            Cursor previous = Cursor;
-            Cursor = Cursors.WaitCursor;
+            if (!Confirm("将重启 Windows 资源管理器，任务栏会短暂消失后自动恢复。\n\n确定继续吗？"))
+            {
+                return;
+            }
+
+            ShowToast("正在重启资源管理器…", false);
             try
             {
-                foreach (Process process in Process.GetProcessesByName("explorer"))
-                {
-                    try
-                    {
-                        process.Kill();
-                        process.WaitForExit(3000);
-                    }
-                    catch
-                    {
-                    }
-                    finally
-                    {
-                        process.Dispose();
-                    }
-                }
-
-                Thread.Sleep(900);
-                if (Process.GetProcessesByName("explorer").Length == 0)
-                {
-                    Process.Start("explorer.exe");
-                }
-                _statusLabel.Text = "资源管理器已重启，字体设置已重新加载。";
+                FontOperations.RestartExplorer();
+                ShowToast("资源管理器已重启。", false);
             }
             catch (Exception ex)
             {
-                MessageDialog.ShowDialog(
-                    this,
-                    DialogKind.Error,
-                    "重启资源管理器失败",
-                    "请手动注销并重新登录，或按 Ctrl+Shift+Esc 打开任务管理器，重新启动 explorer.exe。\n\n" +
-                    ex.Message,
-                    "知道了",
-                    null);
-            }
-            finally
-            {
-                Cursor = previous;
+                ShowToast(ex.Message, true);
             }
         }
 
-        private void OpenBackupFolder()
+        private bool Confirm(string text)
         {
-            try
-            {
-                if (!Directory.Exists(BackupStore.BaseDirectory))
-                {
-                    MessageDialog.ShowDialog(
-                        this,
-                        DialogKind.Info,
-                        "备份目录尚未创建",
-                        "首次应用字体会自动创建备份目录。",
-                        "知道了",
-                        null);
-                    return;
-                }
+            return MessageBox.Show(this, text, "Windows 全局字体替换器", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question, MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+        }
 
-                Process.Start("explorer.exe", "\"" + BackupStore.BaseDirectory + "\"");
-            }
-            catch (Exception ex)
+        private void ToggleIconFont()
+        {
+            _replaceIcon = !_replaceIcon;
+            SettingsStore.IncludeIconFont = _replaceIcon;
+            Invalidate();
+        }
+
+        private void ShowToast(string text, bool error)
+        {
+            _toastText = text;
+            _toastError = error;
+            _toastUntil = DateTime.UtcNow.AddSeconds(error ? 4.5 : 3.0);
+            Invalidate();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left)
             {
-                MessageDialog.ShowDialog(
-                    this,
-                    DialogKind.Error,
-                    "无法打开备份目录",
-                    ex.Message,
-                    "知道了",
-                    null);
+                return;
+            }
+
+            HotSpot hit = HitTest(e.Location);
+            if (hit == HotSpot.None && S(TitleBarRect).Contains(e.Location) && !S(CloseButtonRect).Contains(e.Location))
+            {
+                NativeMethods.ReleaseCapture();
+                NativeMethods.SendMessagePtr(Handle, NativeMethods.WM_NCLBUTTONDOWN,
+                    new IntPtr(NativeMethods.HTCAPTION), IntPtr.Zero);
+                return;
+            }
+
+            _pressed = hit;
+            Invalidate();
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            HotSpot hit = HitTest(e.Location);
+            if (hit != _hot)
+            {
+                _hot = hit;
+                Cursor = hit == HotSpot.None ? Cursors.Default : Cursors.Hand;
+                Invalidate();
             }
         }
 
-        private sealed class AdminBadge : Control
+        protected override void OnMouseUp(MouseEventArgs e)
         {
-            private bool _isAdmin;
+            base.OnMouseUp(e);
+            HotSpot hit = HitTest(e.Location);
+            HotSpot pressed = _pressed;
+            _pressed = HotSpot.None;
 
-            public bool IsAdmin
+            if (pressed != HotSpot.None && pressed == hit)
             {
-                get { return _isAdmin; }
-                set { _isAdmin = value; Invalidate(); }
+                switch (pressed)
+                {
+                    case HotSpot.Close:
+                        Close();
+                        break;
+                    case HotSpot.Apply:
+                        ApplySelectedFont();
+                        break;
+                    case HotSpot.Restore:
+                        RestoreFonts();
+                        break;
+                    case HotSpot.Restart:
+                        RestartExplorer();
+                        break;
+                    case HotSpot.Toggle:
+                        ToggleIconFont();
+                        break;
+                }
             }
 
-            public AdminBadge()
+            Invalidate();
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            base.OnMouseLeave(e);
+            if (_hot != HotSpot.None)
             {
-                DoubleBuffered = true;
-                SetStyle(
-                    ControlStyles.AllPaintingInWmPaint |
-                    ControlStyles.UserPaint |
-                    ControlStyles.OptimizedDoubleBuffer |
-                    ControlStyles.ResizeRedraw,
-                    true);
+                _hot = HotSpot.None;
+                Cursor = Cursors.Default;
+                Invalidate();
+            }
+        }
+
+        private HotSpot HitTest(Point point)
+        {
+            if (S(CloseButtonRect).Contains(point))
+            {
+                return HotSpot.Close;
+            }
+            if (S(ApplyButtonRect).Contains(point))
+            {
+                return HotSpot.Apply;
+            }
+            if (_hasBackup && S(RestoreButtonRect).Contains(point))
+            {
+                return HotSpot.Restore;
+            }
+            if (S(RestartButtonRect).Contains(point))
+            {
+                return HotSpot.Restart;
+            }
+            if (S(ToggleHitRect).Contains(point))
+            {
+                return HotSpot.Toggle;
+            }
+            return HotSpot.None;
+        }
+
+        private int S(int value)
+        {
+            return (int)Math.Round(value * _scale);
+        }
+
+        private Rectangle S(Rectangle rect)
+        {
+            return new Rectangle(S(rect.X), S(rect.Y), S(rect.Width), S(rect.Height));
+        }
+
+        private Rectangle R(int x, int y, int width, int height)
+        {
+            return S(new Rectangle(x, y, width, height));
+        }
+
+        private Point P(int x, int y)
+        {
+            return new Point(S(x), S(y));
+        }
+
+        private void Draw(Graphics g, string text, Font font, Color color, Point point)
+        {
+            TextRenderer.DrawText(g, text, font, point, color, TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+        }
+
+        private void DrawRect(Graphics g, string text, Font font, Color color, Rectangle rect, TextFormatFlags flags)
+        {
+            TextRenderer.DrawText(g, text, font, rect, color, flags);
+        }
+
+        private void DrawCentered(Graphics g, string text, Font font, Color color, Rectangle rect)
+        {
+            TextRenderer.DrawText(g, text, font, rect, color,
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine |
+                TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        }
+
+        private void DrawRight(Graphics g, string text, Font font, Color color, Rectangle rect)
+        {
+            TextRenderer.DrawText(g, text, font, rect, color,
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine |
+                TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                if (_toastTimer != null)
+                {
+                    _toastTimer.Stop();
+                    _toastTimer.Dispose();
+                    _toastTimer = null;
+                }
+
+                foreach (Font font in _sampleFonts.Values)
+                {
+                    font.Dispose();
+                }
+                _sampleFonts.Clear();
+
+                DisposeFont(ref _fontTitle);
+                DisposeFont(ref _fontSubtitle);
+                DisposeFont(ref _fontSection);
+                DisposeFont(ref _fontLabel);
+                DisposeFont(ref _fontBody);
+                DisposeFont(ref _fontValue);
+                DisposeFont(ref _fontSmall);
+                DisposeFont(ref _fontTiny);
+                DisposeFont(ref _fontButton);
+                DisposeFont(ref _fontListFont);
+                DisposeFont(ref _fontBadge);
+                DisposeFont(ref _fontIcon);
             }
 
-            protected override void OnPaint(PaintEventArgs e)
+            base.Dispose(disposing);
+        }
+
+        private static void DisposeFont(ref Font font)
+        {
+            if (font != null)
             {
-                Graphics g = e.Graphics;
-                g.SmoothingMode = SmoothingMode.AntiAlias;
-                using (SolidBrush parent = new SolidBrush(Theme.Background))
-                {
-                    g.FillRectangle(parent, ClientRectangle);
-                }
-
-                Color fill = _isAdmin ? Theme.SuccessSoft : Color.FromArgb(241, 245, 249);
-                Color border = _isAdmin ? Color.FromArgb(167, 243, 208) : Theme.Border;
-                Color text = _isAdmin ? Theme.Success : Theme.Muted;
-                Rectangle bounds = new Rectangle(0, 0, Width - 1, Height - 1);
-                using (GraphicsPath path = Theme.RoundedRect(bounds, 11))
-                {
-                    using (SolidBrush fillBrush = new SolidBrush(fill))
-                    {
-                        g.FillPath(fillBrush, path);
-                    }
-                    using (Pen borderPen = new Pen(border))
-                    {
-                        g.DrawPath(borderPen, path);
-                    }
-                }
-
-                using (SolidBrush dot = new SolidBrush(_isAdmin ? Theme.Success : Theme.MutedLight))
-                {
-                    g.FillEllipse(dot, 11, 9, 6, 6);
-                }
-
-                TextRenderer.DrawText(
-                    g,
-                    _isAdmin ? "管理员模式" : "按需提权",
-                    Theme.Font(7.6f, FontStyle.Bold),
-                    new Rectangle(22, 0, Width - 26, Height),
-                    text,
-                    TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                font.Dispose();
+                font = null;
             }
         }
     }
